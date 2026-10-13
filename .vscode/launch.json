@@ -1,0 +1,71 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "yt-tui",
+      "cargo": {
+        "args": ["build", "--bin=yt-tui"],
+        "filter": {
+          "name": "yt-tui",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "env": {
+        "RUST_LOG": "info"
+      }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "yt-tui (debug logging)",
+      "cargo": {
+        "args": ["build", "--bin=yt-tui"],
+        "filter": {
+          "name": "yt-tui",
+          "kind": "bin"
+        }
+      },
+      "args": ["--debug"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "env": {
+        "RUST_LOG": "debug"
+      }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "yt-tui doctor",
+      "cargo": {
+        "args": ["build", "--bin=yt-tui"],
+        "filter": {
+          "name": "yt-tui",
+          "kind": "bin"
+        }
+      },
+      "args": ["doctor"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "yt-tui (release)",
+      "cargo": {
+        "args": ["build", "--release", "--bin=yt-tui"],
+        "filter": {
+          "name": "yt-tui",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ]
+}
