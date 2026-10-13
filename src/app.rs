@@ -158,6 +158,8 @@ pub struct App {
     pub title_marquee: crate::ui::marquee::Marquee,
     /// Loaded artwork keyed by track `video_id` or `detail:<browse_id>`.
     pub covers: std::collections::HashMap<String, crate::art::Cover>,
+    /// Track whose cover accent is currently applied to the theme.
+    accent_for: Option<String>,
     pub cover_ui: crate::ui::cover::CoverRenderer,
     pub hit: std::cell::RefCell<crate::ui::HitMap>,
     radio_requested_for: Option<String>,
@@ -232,6 +234,7 @@ impl App {
             visualizer: Visualizer::new(VisualizerStyle::from_config(&config.ui.visualizer)),
             title_marquee: crate::ui::marquee::Marquee::new(""),
             covers: Default::default(),
+            accent_for: None,
             cover_ui: Default::default(),
             hit: Default::default(),
             radio_requested_for: None,
@@ -336,14 +339,19 @@ impl App {
 
     /// Keeps the cover cache bounded while preserving the covers still on screen.
     fn prune_covers(&mut self) {
-        const MAX_COVERS: usize = 48;
+        const MAX_COVERS: usize = 96;
         if self.covers.len() <= MAX_COVERS {
             return;
         }
         let mut keep: Vec<String> = self.nav_stack.iter().map(DetailView::cover_key).collect();
         keep.extend(self.detail_cover_key());
         keep.extend(self.current.as_ref().map(|t| t.video_id.clone()));
-        // Drop arbitrary extras first; never evict the active/detail covers.
+        for shelf in &self.home_shelves {
+            for item in &shelf.items {
+                keep.push(item.cover_key().to_string());
+            }
+        }
+        // Drop arbitrary extras first; never evict the active/detail/home covers.
         let extras: Vec<String> = self
             .covers
             .keys()
@@ -353,6 +361,33 @@ impl App {
         let overflow = self.covers.len().saturating_sub(MAX_COVERS);
         for key in extras.into_iter().take(overflow) {
             self.covers.remove(&key);
+        }
+    }
+
+    /// Prefetch artwork for Home shelf cards (playlists, albums, tracks, artists).
+    fn ensure_home_covers(&mut self, cmds: &mut Vec<Command>) {
+        const MAX_FETCH: usize = 80;
+        let requests: Vec<(String, String)> = self
+            .home_shelves
+            .iter()
+            .flat_map(|s| s.items.iter())
+            .filter_map(|item| {
+                let key = item.cover_key().to_string();
+                if self.covers.contains_key(&key) {
+                    return None;
+                }
+                Some((key, item.art_url()?))
+            })
+            .take(MAX_FETCH)
+            .collect();
+        for (key, url) in requests {
+            // Empty entry marks in-flight so navigation doesn't re-queue the same URL.
+            self.covers
+                .insert(key.clone(), crate::art::Cover::default());
+            cmds.push(Command::FetchArt {
+                url,
+                video_id: key,
+            });
         }
     }
 
@@ -426,6 +461,7 @@ impl App {
         // Always allow tick
         match action {
             Action::Tick => {
+                self.sync_accent_to_cover();
                 self.theme.tick_accent();
                 self.toasts.retain(|t| !t.expired());
                 if let Some(t) = self.current_track() {
@@ -460,16 +496,9 @@ impl App {
             Overlay::Onboarding => {
                 match action {
                     Action::BeginLogin => {
-                        self.onboarding_status =
-                            "Opening browser… log in, then return here.".into();
-                        #[cfg(target_os = "macos")]
-                        {
-                            self.onboarding_status.push_str(
-                                "\n  (macOS may ask to unlock Chrome Safe Storage — click Always Allow)",
-                            );
-                        }
-                        self.overlay = Overlay::Onboarding;
-                        cmds.push(Command::BeginBrowserLogin);
+                        self.overlay = Overlay::ManualCookie {
+                            input: String::new(),
+                        };
                     }
                     Action::ContinueAsGuest => {
                         self.overlay = Overlay::None;
@@ -621,8 +650,9 @@ impl App {
                 match action {
                     Action::CloseOverlay | Action::Escape => self.overlay = Overlay::None,
                     Action::BeginLogin | Action::Select if !self.signed_in => {
-                        self.overlay = Overlay::None;
-                        cmds.push(Command::BeginBrowserLogin);
+                        self.overlay = Overlay::ManualCookie {
+                            input: String::new(),
+                        };
                     }
                     Action::Logout | Action::Select if self.signed_in => {
                         cmds.push(Command::Logout);
@@ -886,13 +916,13 @@ impl App {
                 if self.search_editing && self.list_len() > 0 {
                     self.search_editing = false;
                 }
-                self.move_sel(-1);
+                self.move_sel(-1, &mut cmds);
             }
             Action::MoveDown => {
                 if self.search_editing && self.list_len() > 0 {
                     self.search_editing = false;
                 }
-                self.move_sel(1);
+                self.move_sel(1, &mut cmds);
             }
             Action::MoveLeft | Action::MoveRight => {
                 let right = matches!(action, Action::MoveRight);
@@ -999,7 +1029,11 @@ impl App {
                 self.library_section = i;
                 self.load_library_section(&mut cmds);
             }
-            Action::BeginLogin => cmds.push(Command::BeginBrowserLogin),
+            Action::BeginLogin => {
+                self.overlay = Overlay::ManualCookie {
+                    input: String::new(),
+                };
+            }
             Action::Logout => cmds.push(Command::Logout),
             Action::SeekToLyricLine(i) => {
                 if let Some(ref lyrics) = self.lyrics {
@@ -1067,7 +1101,11 @@ impl App {
             "queue" => self.tab = Tab::Queue,
             "lyrics" => self.tab = Tab::Lyrics,
             "np" => self.fullscreen_np = true,
-            "login" => cmds.push(Command::BeginBrowserLogin),
+            "login" => {
+                self.overlay = Overlay::ManualCookie {
+                    input: String::new(),
+                };
+            }
             "logout" => {
                 if self.signed_in {
                     cmds.push(Command::Logout);
@@ -1311,6 +1349,7 @@ impl App {
                 } else {
                     self.home_item_idx = self.home_item_idx.saturating_sub(1);
                 }
+                self.ensure_home_covers(cmds);
             }
             Tab::Library if browsing => {
                 let n = crate::ui::views::library::SECTIONS.len();
@@ -1331,7 +1370,7 @@ impl App {
         }
     }
 
-    fn move_sel(&mut self, delta: i32) {
+    fn move_sel(&mut self, delta: i32, cmds: &mut Vec<Command>) {
         if self.tab == Tab::Home && self.detail.is_none() {
             if delta < 0 {
                 self.home_shelf_idx = self.home_shelf_idx.saturating_sub(1);
@@ -1339,6 +1378,7 @@ impl App {
                 self.home_shelf_idx += 1;
             }
             self.home_item_idx = 0;
+            self.ensure_home_covers(cmds);
             return;
         }
         if self.tab == Tab::Library && self.detail.is_none() {
@@ -1402,6 +1442,22 @@ impl App {
         }
         let _ = self.player_cmd_tx.send(PlayerCommand::PlayTracks { tracks, start });
         cmds
+    }
+
+    /// Applies the current track's cover color once, including for covers served from cache.
+    fn sync_accent_to_cover(&mut self) {
+        let Some(id) = self.current.as_ref().map(|t| t.video_id.clone()) else {
+            return;
+        };
+        if self.accent_for.as_deref() == Some(id.as_str()) {
+            return;
+        }
+        if let Some(cover) = self.covers.get(&id) {
+            if let Some((r, g, b)) = cover.accent {
+                self.theme.set_accent_rgb(r, g, b);
+            }
+            self.accent_for = Some(id);
+        }
     }
 
     fn ensure_track_art(&mut self, track: &Track, cmds: &mut Vec<Command>) {
@@ -1599,7 +1655,7 @@ impl App {
                 ));
                 self.onboarding_status = format!(
                     "{msg}\n\n  Your username was cached, but YouTube is treating this session as signed out.\n  \
-                     Press L to refresh login (or P to paste a fresh cookie)."
+                     Press L (or P) to paste a fresh cURL / cookie."
                 );
                 self.overlay = Overlay::Onboarding;
             }
@@ -1645,6 +1701,7 @@ impl App {
                         .map(|s| s.items.len())
                         .unwrap_or(0);
                     self.home_item_idx = self.home_item_idx.min(item_len.saturating_sub(1));
+                    self.ensure_home_covers(&mut cmds);
                 }
             }
             AppEvent::AlbumLoaded(a) => {
@@ -1718,17 +1775,10 @@ impl App {
                 image,
                 ..
             } => {
-                let is_current =
-                    self.current.as_ref().map(|t| t.video_id.as_str()) == Some(video_id.as_str());
-                if is_current {
-                    if let Some((r, g, b)) = accent {
-                        self.theme.set_accent_rgb(r, g, b);
-                    }
-                }
                 // Always cache — a late reply after a quick skip still warms the
                 // next play, and discarding here left the UI stuck on placeholders.
                 self.covers
-                    .insert(video_id, crate::art::Cover { pixels, image });
+                    .insert(video_id, crate::art::Cover { pixels, image, accent });
                 self.prune_covers();
             }
             AppEvent::RateDone { video_id, liked } => {

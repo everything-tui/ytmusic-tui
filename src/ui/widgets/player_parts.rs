@@ -3,6 +3,8 @@ use crate::api::model::format_duration;
 use crate::art::ArtPixels;
 use crate::player::queue::RepeatMode;
 use crate::player::PlaybackState;
+use crate::ui::cover::CoverCtx;
+use crate::ui::icons::Icon;
 use crate::ui::theme::Theme;
 use ratatui::prelude::*;
 use std::time::Duration;
@@ -57,7 +59,7 @@ pub fn render_art_placeholder(buf: &mut Buffer, r: Rect, theme: &Theme) {
     buf.set_string(x, y, note, Style::default().fg(theme.text_muted).bg(theme.bg_selected));
 }
 
-/// `0:42 ━━━━━━━━●━━━━━━━━━ 3:20` — returns the rect of the bar itself for click-to-seek.
+/// `0:42  ████████████▒▒▒▒▒▒▒▒  3:20` — block-fill progress bar; returns the bar rect for click-to-seek.
 pub fn render_progress(
     buf: &mut Buffer,
     area: Rect,
@@ -94,17 +96,17 @@ pub fn render_progress(
     } else {
         0.0
     };
-    let knob = ((bar.width - 1) as f64 * ratio).round() as u16;
+    let filled = ((bar.width as f64 * ratio).round() as u16).min(bar.width);
     let loading = matches!(state, PlaybackState::Loading | PlaybackState::Buffering);
     for i in 0..bar.width {
-        let (sym, style) = if i < knob {
-            ("━", Style::default().fg(theme.accent))
-        } else if i == knob && !loading {
-            ("●", Style::default().fg(theme.text))
+        let (sym, color) = if loading {
+            ("▒", theme.text_muted)
+        } else if i < filled {
+            ("█", theme.accent)
         } else {
-            ("━", Style::default().fg(theme.bg_selected))
+            ("▒", theme.bg_selected)
         };
-        buf.set_string(bar.x + i, bar.y, sym, style);
+        buf.set_string(bar.x + i, bar.y, sym, Style::default().fg(color));
     }
     bar
 }
@@ -116,105 +118,153 @@ pub struct ControlsState {
     pub liked: bool,
 }
 
-/// Centered `⇄   ⏮   ( ⏸ )   ⏭   ↻   ♥` row. Returns clickable rects.
+/// Flat controls, no backgrounds: `⇄ ⏮ ▶ ⏭ ↻ ♥`. Drawn as scalable images when the terminal
+/// supports graphics, as plain glyphs otherwise. Returns clickable rects.
 pub fn render_controls(
     buf: &mut Buffer,
     area: Rect,
     c: &ControlsState,
     theme: &Theme,
+    cover: Option<&CoverCtx>,
 ) -> Vec<(Rect, Action)> {
     if area.width == 0 || area.height == 0 {
         return Vec::new();
     }
-    let on = theme.accent_bold();
-    let off = theme.dim();
-    let normal = theme.title();
-    let play = match c.state {
-        PlaybackState::Playing => " ⏸ ",
-        PlaybackState::Loading | PlaybackState::Buffering => " … ",
-        _ => " ▶ ",
-    };
-    let repeat = match c.repeat {
-        RepeatMode::One => "↻¹",
-        _ => "↻",
-    };
-    let buttons: Vec<(&str, Style, Action)> = vec![
-        ("⇄", if c.shuffle { on } else { off }, Action::ToggleShuffle),
-        ("⏮", normal, Action::Previous),
-        (play, theme.on_accent(), Action::PlayPause),
-        ("⏭", normal, Action::Next),
+    let active = Style::default().fg(theme.accent).add_modifier(Modifier::BOLD);
+    let inactive = Style::default().fg(theme.text_muted);
+    let normal = Style::default().fg(theme.text);
+    let loading = matches!(c.state, PlaybackState::Loading | PlaybackState::Buffering);
+    let spin = spinner();
+
+    // (icon, glyph, style, action)
+    let buttons: Vec<(Icon, &str, Style, Action)> = vec![
+        (Icon::Shuffle, "⇄", if c.shuffle { active } else { inactive }, Action::ToggleShuffle),
+        (Icon::Prev, "⏮", normal, Action::Previous),
         (
-            repeat,
-            if c.repeat == RepeatMode::Off { off } else { on },
+            if c.state == PlaybackState::Playing { Icon::Pause } else { Icon::Play },
+            match c.state {
+                PlaybackState::Playing => "⏸",
+                _ if loading => spin,
+                _ => "▶",
+            },
+            active,
+            Action::PlayPause,
+        ),
+        (Icon::Next, "⏭", normal, Action::Next),
+        (
+            if c.repeat == RepeatMode::One { Icon::RepeatOne } else { Icon::Repeat },
+            if c.repeat == RepeatMode::One { "↻¹" } else { "↻" },
+            if c.repeat == RepeatMode::Off { inactive } else { active },
             Action::CycleRepeat,
         ),
         (
+            if c.liked { Icon::Heart } else { Icon::HeartOutline },
             if c.liked { "♥" } else { "♡" },
-            if c.liked { on } else { off },
+            if c.liked { active } else { inactive },
             Action::LikeCurrent,
         ),
     ];
-    let gap: u16 = if area.width >= 44 { 4 } else { 2 };
-    let total: u16 = buttons.iter().map(|(s, _, _)| s.width() as u16).sum::<u16>()
-        + gap * (buttons.len() as u16 - 1);
-    let mut x = area.x + area.width.saturating_sub(total) / 2;
+
+    let renderer = cover
+        .filter(|ctx| {
+            ctx.graphics
+                && ctx.renderer.icons_available()
+                && !ctx.blocked.iter().any(|b| b.intersects(area))
+        })
+        .map(|ctx| ctx.renderer)
+        .filter(|_| area.height >= 2);
+
+    let rows = area.height.min(2);
+    let icon_w = renderer.map(|r| r.width_for_rows(rows)).unwrap_or(0);
+    let width_of = |glyph: &str| if renderer.is_some() { icon_w } else { glyph.width() as u16 };
+    let gap_for = |cut: u16, play: bool| -> u16 {
+        let base: u16 = if renderer.is_some() { if play { 4 } else { 3 } } else if play { 3 } else { 2 };
+        base.saturating_sub(cut).max(1)
+    };
+    let total_at = |cut: u16| -> u16 {
+        buttons
+            .iter()
+            .map(|(_, g, _, a)| width_of(g) + gap_for(cut, matches!(a, Action::PlayPause)))
+            .sum::<u16>()
+            .saturating_sub(gap_for(cut, false))
+    };
+    let cut = (0u16..=3).find(|&d| total_at(d) <= area.width).unwrap_or(3);
+
+    let mut x = area.x + area.width.saturating_sub(total_at(cut)) / 2;
+    let top = area.y + (area.height - rows) / 2;
+    let mid = area.y + (area.height - 1) / 2;
+    let bg = rgb_of(theme.bg_player, (24, 24, 24));
     let mut hits = Vec::new();
-    for (sym, style, action) in buttons {
-        let w = sym.width() as u16;
+    for (icon, glyph, style, action) in buttons {
+        let is_play = matches!(action, Action::PlayPause);
+        let w = width_of(glyph);
+        let half = gap_for(cut, is_play) / 2;
         if x + w > area.x + area.width {
             break;
         }
-        buf.set_string(x, area.y, sym, style);
-        hits.push((
-            Rect {
-                x: x.saturating_sub(1),
-                y: area.y,
-                width: w + 2,
-                height: 1,
-            },
-            action,
-        ));
-        x += w + gap;
+        let rect = Rect {
+            x: x.saturating_sub(half).max(area.x),
+            y: area.y,
+            width: w + 2 * half,
+            height: area.height,
+        };
+        let drawn = renderer.is_some_and(|r| {
+            let fg = rgb_of(style.fg.unwrap_or(theme.text), (230, 230, 230));
+            r.draw_icon(icon, fg, bg, Rect { x, y: top, width: w, height: rows }, buf)
+        });
+        if !drawn {
+            buf.set_string(x, mid, glyph, style);
+        }
+        hits.push((rect, action));
+        x += w + gap_for(cut, is_play);
     }
     hits
 }
 
-/// `🔊 ━━━━━━━━──── 60%`, right-aligned in `area` — returns the bar rect for click-to-set.
+fn rgb_of(c: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
+    match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Indexed(n) if n >= 232 => {
+            let v = 8 + 10 * (n - 232);
+            (v, v, v)
+        }
+        Color::Indexed(n) if n >= 16 => {
+            let n = n - 16;
+            let lv = |i: u8| if i == 0 { 0 } else { 55 + 40 * i };
+            (lv(n / 36), lv((n / 6) % 6), lv(n % 6))
+        }
+        _ => fallback,
+    }
+}
+
+/// `♫ ██████████░░░░ 65%` — icon + block level stretched across `area` + percentage.
+/// Returns the block bar rect for click-to-set volume.
 pub fn render_volume(buf: &mut Buffer, area: Rect, volume: f32, muted: bool, theme: &Theme) -> Rect {
-    if area.width < 8 || area.height == 0 {
+    if area.width < 6 || area.height == 0 {
         return Rect::default();
     }
-    let icon = if muted || volume <= 0.001 {
-        "🔇"
-    } else if volume < 0.5 {
-        "🔉"
-    } else {
-        "🔊"
-    };
+    let silent = muted || volume <= 0.001;
     let pct = if muted {
-        "mute".to_string()
+        " mut".to_string()
     } else {
         format!("{:>4}", format!("{:.0}%", volume * 100.0))
     };
-    let iw = icon.width() as u16;
-    let segs = area.width.saturating_sub(iw + 1 + pct.width() as u16 + 1).min(14);
-    let total = iw + 1 + segs + 1 + pct.width() as u16;
-    let x0 = area.x + area.width.saturating_sub(total);
-    buf.set_string(x0, area.y, icon, theme.dim());
-    let bar = Rect {
-        x: x0 + iw + 1,
-        y: area.y,
-        width: segs,
-        height: 1,
-    };
-    let filled = if muted {
+    // icon(1) + space(1) + blocks + space(1) + pct; blocks stretch to fill `area`.
+    let segs = area.width.saturating_sub(3 + pct.width() as u16).max(3);
+    let x0 = area.x;
+
+    let icon_color = if silent { theme.text_muted } else { theme.accent };
+    buf.set_string(x0, area.y, "♫", Style::default().fg(icon_color));
+
+    let bar = Rect { x: x0 + 2, y: area.y, width: segs, height: 1 };
+    let filled = if silent {
         0
     } else {
         (volume.clamp(0.0, 1.0) * segs as f32).round() as u16
     };
     for i in 0..segs {
-        let color = if i < filled { theme.text } else { theme.bg_selected };
-        buf.set_string(bar.x + i, bar.y, "━", Style::default().fg(color));
+        let (sym, color) = if i < filled { ("█", theme.text) } else { ("░", theme.text_muted) };
+        buf.set_string(bar.x + i, bar.y, sym, Style::default().fg(color));
     }
     buf.set_string(bar.x + segs + 1, area.y, &pct, theme.muted());
     bar

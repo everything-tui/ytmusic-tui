@@ -2,9 +2,10 @@ use crate::api::model::*;
 use crate::auth::{manual, sapisid, USER_AGENT};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
 
 const BASE: &str = "https://music.youtube.com/youtubei/v1";
 /// Public WEB_REMIX key used by the YouTube Music web client / ytmusicapi.
@@ -16,6 +17,8 @@ pub struct InnertubeClient {
     cookies: Arc<Mutex<Option<String>>>,
     visitor_id: Arc<Mutex<Option<String>>>,
     user_session_id: Arc<Mutex<Option<String>>>,
+    /// Set when a response rotated session cookies that have not been persisted yet.
+    cookies_dirty: Arc<AtomicBool>,
 }
 
 impl InnertubeClient {
@@ -30,6 +33,7 @@ impl InnertubeClient {
             cookies: Arc::new(Mutex::new(cookies)),
             visitor_id: Arc::new(Mutex::new(None)),
             user_session_id: Arc::new(Mutex::new(None)),
+            cookies_dirty: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -45,6 +49,15 @@ impl InnertubeClient {
     pub fn apply_session(&mut self, session: &crate::auth::AuthSession) {
         self.set_cookies(Some(session.cookies.clone()));
         self.set_auth_meta(session.visitor_id.clone(), session.user_session_id.clone());
+    }
+
+    /// Returns the current cookie header once after Google rotated it, so it can be saved.
+    pub fn take_rotated_cookies(&self) -> Option<String> {
+        if self.cookies_dirty.swap(false, Ordering::SeqCst) {
+            self.cookies()
+        } else {
+            None
+        }
     }
 
     pub fn cookies(&self) -> Option<String> {
@@ -125,7 +138,10 @@ impl InnertubeClient {
             }
             if !updates.is_empty() {
                 let merged = manual::merge_cookie_header(current, &updates);
-                *self.cookies.lock().unwrap() = Some(merged);
+                if cookie_set(&merged) != cookie_set(current) {
+                    *self.cookies.lock().unwrap() = Some(merged);
+                    self.cookies_dirty.store(true, Ordering::SeqCst);
+                }
             }
         }
 
@@ -228,7 +244,9 @@ impl InnertubeClient {
         let body = json!({ "browseId": "FEmusic_history" });
         let json = self.post("browse", body).await?;
         self.require_signed_in(&json, "history")?;
-        Ok(parse_history(&json))
+        let tracks = parse_history(&json);
+        dump_if_empty("history", tracks.is_empty(), &json);
+        Ok(tracks)
     }
 
     fn require_signed_in(&self, json: &Value, what: &str) -> Result<()> {
@@ -735,7 +753,7 @@ fn parse_two_row_album(item: &Value) -> Option<Album> {
         .pointer("/subtitle/runs")
         .map(parse_artist_runs)
         .unwrap_or_default();
-    let thumbnails = parse_thumbnails(r.pointer("/thumbnailRenderer").unwrap_or(&Value::Null));
+    let thumbnails = parse_two_row_thumbnails(r);
     Some(Album {
         id,
         title,
@@ -760,7 +778,7 @@ fn parse_two_row_artist(item: &Value) -> Option<Artist> {
         }
     }
     let name = runs_text(r.pointer("/title/runs").unwrap_or(&Value::Null))?;
-    let thumbnails = parse_thumbnails(r.pointer("/thumbnailRenderer").unwrap_or(&Value::Null));
+    let thumbnails = parse_two_row_thumbnails(r);
     Some(Artist {
         id,
         name,
@@ -789,7 +807,7 @@ fn parse_two_row_playlist(item: &Value) -> Option<Playlist> {
     let browse = r.pointer("/navigationEndpoint/browseEndpoint")?;
     let id = is_playlist_browse(browse)?;
     let title = runs_text(r.pointer("/title/runs").unwrap_or(&Value::Null))?;
-    let thumbnails = parse_thumbnails(r.pointer("/thumbnailRenderer").unwrap_or(&Value::Null));
+    let thumbnails = parse_two_row_thumbnails(r);
     Some(Playlist {
         id: id.trim_start_matches("VL").to_string(),
         title,
@@ -799,6 +817,15 @@ fn parse_two_row_playlist(item: &Value) -> Option<Playlist> {
         thumbnails,
         tracks: vec![],
     })
+}
+
+/// Two-row cards usually nest art under `thumbnailRenderer`; some shelves use `thumbnail`.
+fn parse_two_row_thumbnails(r: &Value) -> Vec<Thumbnail> {
+    let from_renderer = parse_thumbnails(r.pointer("/thumbnailRenderer").unwrap_or(&Value::Null));
+    if !from_renderer.is_empty() {
+        return from_renderer;
+    }
+    parse_thumbnails(r.pointer("/thumbnail").unwrap_or(&Value::Null))
 }
 
 /// Library / search playlists rendered as a list row instead of a two-row card.
@@ -1187,6 +1214,61 @@ mod fixture_tests {
     }
 
     #[test]
+    fn parse_home_playlist_card_thumbnails() {
+        let item = serde_json::json!({
+            "musicTwoRowItemRenderer": {
+                "title": { "runs": [{ "text": "Daily Mix" }] },
+                "navigationEndpoint": {
+                    "browseEndpoint": {
+                        "browseId": "VLPL999",
+                        "browseEndpointContextSupportedConfigs": {
+                            "browseEndpointContextMusicConfig": {
+                                "pageType": "MUSIC_PAGE_TYPE_PLAYLIST"
+                            }
+                        }
+                    }
+                },
+                "thumbnailRenderer": {
+                    "musicThumbnailRenderer": {
+                        "thumbnail": {
+                            "thumbnails": [{ "url": "https://lh3.googleusercontent.com/cover=w60", "width": 60 }]
+                        }
+                    }
+                }
+            }
+        });
+        let p = parse_two_row_playlist(&item).expect("playlist");
+        assert_eq!(p.id, "PL999");
+        assert_eq!(p.thumbnails.len(), 1);
+        assert!(p.thumbnails[0].url.contains("googleusercontent"));
+
+        let alt = serde_json::json!({
+            "musicTwoRowItemRenderer": {
+                "title": { "runs": [{ "text": "Chill" }] },
+                "navigationEndpoint": {
+                    "browseEndpoint": {
+                        "browseId": "VLRD123",
+                        "browseEndpointContextSupportedConfigs": {
+                            "browseEndpointContextMusicConfig": {
+                                "pageType": "MUSIC_PAGE_TYPE_PLAYLIST"
+                            }
+                        }
+                    }
+                },
+                "thumbnail": {
+                    "musicThumbnailRenderer": {
+                        "thumbnail": {
+                            "thumbnails": [{ "url": "https://i.ytimg.com/vi/abc/hqdefault.jpg", "width": 120 }]
+                        }
+                    }
+                }
+            }
+        });
+        let p = parse_two_row_playlist(&alt).expect("playlist alt thumb path");
+        assert_eq!(p.thumbnails.len(), 1);
+    }
+
+    #[test]
     fn parse_library_playlists_from_list_rows() {
         let json = serde_json::json!({
             "contents": [{
@@ -1223,5 +1305,25 @@ mod fixture_tests {
         assert_eq!(playlists[0].id, "PL123abc");
         assert_eq!(playlists[0].title, "Late Night Mix");
         assert_eq!(playlists[0].author.as_deref(), Some("YouTube Music"));
+    }
+}
+
+fn cookie_set(header: &str) -> std::collections::BTreeMap<String, String> {
+    manual::cookie_map(header).into_iter().collect()
+}
+
+/// Saves the raw response of a signed-in list that parsed to nothing, so a changed YouTube
+/// layout can be diagnosed instead of silently showing an empty list.
+fn dump_if_empty(name: &str, empty: bool, json: &Value) {
+    if !empty {
+        return;
+    }
+    let dir = std::env::temp_dir().join("yt-tui-debug");
+    let path = dir.join(format!("{name}.json"));
+    let saved = std::fs::create_dir_all(&dir)
+        .and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(json).unwrap_or_default()));
+    match saved {
+        Ok(()) => warn!("{name}: signed-in response parsed to 0 items; raw saved to {}", path.display()),
+        Err(e) => warn!("{name}: parsed to 0 items (could not save raw response: {e})"),
     }
 }

@@ -1,4 +1,3 @@
-pub mod browser;
 pub mod manual;
 pub mod sapisid;
 
@@ -58,49 +57,47 @@ impl AuthService {
     }
 
     fn load_session(paths: &Paths) -> Result<Option<AuthSession>> {
-        // Try keyring first
-        if let Ok(entry) = keyring::Entry::new("yt-tui", "cookies") {
-            if let Ok(json) = entry.get_password() {
-                if let Ok(session) = serde_json::from_str::<AuthSession>(&json) {
-                    return Ok(Some(session));
-                }
-            }
-        }
-        // File fallback
         let path = paths.auth_file();
-        if path.exists() {
-            let text = fs::read_to_string(&path)?;
-            let session: AuthSession = serde_json::from_str(&text)?;
-            return Ok(Some(session));
+        if !path.exists() {
+            return Ok(None);
         }
-        Ok(None)
+        let text = fs::read_to_string(&path)?;
+        Ok(Some(serde_json::from_str(&text)?))
     }
 
+    /// Saved in a private (0600) file in the app data directory; the OS keychain is not used,
+    /// so no password prompts can ever come from storing or reading the session.
     pub fn save_session(&mut self, session: AuthSession) -> Result<()> {
         let json = serde_json::to_string(&session)?;
-        let mut saved = false;
-        if let Ok(entry) = keyring::Entry::new("yt-tui", "cookies") {
-            if entry.set_password(&json).is_ok() {
-                saved = true;
-            }
-        }
-        if !saved {
-            let path = self.paths.auth_file();
-            fs::write(&path, &json)?;
+        let path = self.paths.auth_file();
+        let tmp = path.with_extension("json.tmp");
+        {
+            use std::io::Write;
+            let mut opts = fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(true);
             #[cfg(unix)]
             {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
             }
+            let mut f = opts.open(&tmp)?;
+            f.write_all(json.as_bytes())?;
         }
+        fs::rename(&tmp, &path)?;
         self.session = Some(session);
         Ok(())
     }
 
+    /// Persist cookies Google rotated during normal use, keeping the saved session alive.
+    pub fn update_cookies(&mut self, cookies: String) -> Result<()> {
+        let Some(mut session) = self.session.clone() else {
+            return Ok(());
+        };
+        session.cookies = cookies;
+        self.save_session(session)
+    }
+
     pub fn logout(&mut self) -> Result<()> {
-        if let Ok(entry) = keyring::Entry::new("yt-tui", "cookies") {
-            let _ = entry.delete_credential();
-        }
         let path = self.paths.auth_file();
         if path.exists() {
             fs::remove_file(&path)?;
@@ -108,115 +105,6 @@ impl AuthService {
         crate::paths::cleanup_legacy(&self.paths);
         self.session = None;
         Ok(())
-    }
-
-    /// Refresh cookies from the remembered browser if possible.
-    pub fn silent_refresh(&mut self) -> Result<bool> {
-        let browser = self
-            .session
-            .as_ref()
-            .and_then(|s| s.browser.clone());
-        let found = browser::read_youtube_cookies();
-        let match_c = if let Some(ref b) = browser {
-            found.into_iter().find(|c| &c.browser == b)
-        } else {
-            found.into_iter().next()
-        };
-        if let Some(c) = match_c {
-            let mut session = self.session.clone().unwrap_or(AuthSession {
-                cookies: String::new(),
-                browser: Some(c.browser.clone()),
-                profile: c.profile.clone(),
-                account_name: None,
-                visitor_id: None,
-                user_session_id: None,
-            });
-            session.cookies = c.cookie_header;
-            session.browser = Some(c.browser);
-            self.save_session(session)?;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-}
-
-/// Poll browsers for a valid YouTube Music session.
-pub async fn poll_browser_login(
-    paths: Arc<Paths>,
-    tx: mpsc::UnboundedSender<AppEvent>,
-) {
-    let _ = tx.send(AppEvent::AuthState(AuthStateEvent::WaitingForBrowser {
-        browsers: vec![
-            "brave".into(),
-            "chrome".into(),
-            "firefox".into(),
-            "safari".into(),
-        ],
-    }));
-    let _ = tx.send(AppEvent::AuthState(AuthStateEvent::Progress(
-        "Opening music.youtube.com…\n  Log in there, then return here.\n  \
-         If macOS asks for Keychain access, click Always Allow."
-            .into(),
-    )));
-
-    if let Err(e) = browser::open_music_youtube() {
-        let _ = tx.send(AppEvent::AuthState(AuthStateEvent::Failed(format!(
-            "Could not open browser: {e}"
-        ))));
-        return;
-    }
-
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(300);
-    let mut last_status = String::new();
-    let mut ticks: u32 = 0;
-    loop {
-        if tokio::time::Instant::now() > deadline {
-            let _ = tx.send(AppEvent::AuthState(AuthStateEvent::Failed(
-                "Timed out waiting for login (5 minutes).\n  Press P to paste a cookie, or Enter to retry."
-                    .into(),
-            )));
-            return;
-        }
-
-        let (found, attempts) = tokio::task::spawn_blocking(browser::read_youtube_cookies_with_status)
-            .await
-            .unwrap_or_else(|_| (Vec::new(), Vec::new()));
-
-        ticks += 1;
-        let summary = browser::summarize_attempts(&attempts);
-        let status = format!(
-            "Waiting for YouTube Music login… ({ticks})\n{summary}\n\n  \
-             Tip: stay logged in, then come back. Press P to paste a cookie instead."
-        );
-        if status != last_status {
-            last_status = status.clone();
-            let _ = tx.send(AppEvent::AuthState(AuthStateEvent::Progress(status)));
-        }
-
-        if let Some(c) = found.into_iter().next() {
-            let _ = tx.send(AppEvent::AuthState(AuthStateEvent::Progress(format!(
-                "Found session in {} — validating…",
-                c.browser
-            ))));
-            match validate_and_save(paths.clone(), c.cookie_header, Some(c.browser), c.profile)
-                .await
-            {
-                Ok(session) => {
-                    info!("signed in via browser");
-                    let _ = tx.send(AppEvent::AuthState(AuthStateEvent::SignedIn(session)));
-                    return;
-                }
-                Err(e) => {
-                    warn!("cookie validation failed: {e}");
-                    let _ = tx.send(AppEvent::AuthState(AuthStateEvent::Progress(format!(
-                        "Found cookies but validation failed: {e}\n  \
-                         Make sure you're logged into music.youtube.com, then wait…"
-                    ))));
-                }
-            }
-        }
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 }
 
@@ -520,4 +408,98 @@ mod tests {
             Some("user99")
         );
     }
+}
+
+const ROTATE_URL: &str = "https://accounts.google.com/RotateCookies";
+
+/// Asks Google to rotate the short-lived session cookies, exactly as a browser tab does in
+/// the background. Returns the new cookie header, or `None` when nothing changed.
+pub async fn rotate_cookies(cookies: &str) -> Result<Option<String>> {
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(20))
+        .build()?;
+    let resp = client
+        .post(ROTATE_URL)
+        .header("Content-Type", "application/json")
+        .header("Origin", "https://accounts.google.com")
+        .header("Cookie", cookies)
+        .body(r#"[000,"-0000000000000000000"]"#)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("RotateCookies HTTP {}", resp.status());
+    }
+    let mut updates = Vec::new();
+    for v in resp.headers().get_all(reqwest::header::SET_COOKIE) {
+        if let Some(pair) = v.to_str().ok().and_then(manual::parse_set_cookie_pair) {
+            updates.push(pair);
+        }
+    }
+    if updates.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(manual::merge_cookie_header(cookies, &updates)))
+}
+
+/// Keeps the saved session alive on its own: rotates cookies shortly after launch and then
+/// periodically, saving the result and handing it to the API client.
+pub async fn keepalive_loop(
+    paths: Arc<Paths>,
+    api: mpsc::UnboundedSender<crate::action::Command>,
+) {
+    let mut wait = std::time::Duration::from_secs(5);
+    loop {
+        tokio::time::sleep(wait).await;
+        wait = std::time::Duration::from_secs(15 * 60);
+        let p = paths.clone();
+        let Some(session) = tokio::task::spawn_blocking(move || {
+            AuthService::new(p).session().cloned()
+        })
+        .await
+        .ok()
+        .flatten() else {
+            continue;
+        };
+        match rotate_cookies(&session.cookies).await {
+            Ok(Some(cookies)) => {
+                let p = paths.clone();
+                let mut updated = session.clone();
+                updated.cookies = cookies;
+                let saved = updated.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let mut svc = AuthService::new(p);
+                    svc.save_session(saved)
+                })
+                .await;
+                let _ = api.send(crate::action::Command::ApplyAuth(updated));
+                info!("session cookies rotated");
+            }
+            Ok(None) => {}
+            Err(e) => warn!("cookie rotation failed: {e}"),
+        }
+    }
+}
+
+/// Tries to revive the saved session without any user input: rotates its cookies the way a
+/// browser would and re-validates. Returns the refreshed session when YouTube accepts it.
+pub async fn recover_session(paths: Arc<Paths>) -> Option<AuthSession> {
+    let p = paths.clone();
+    let session = tokio::task::spawn_blocking(move || AuthService::new(p).session().cloned())
+        .await
+        .ok()
+        .flatten()?;
+    let cookies = match rotate_cookies(&session.cookies).await {
+        Ok(Some(c)) => c,
+        _ => session.cookies.clone(),
+    };
+    validate_and_save_with_visitor(
+        paths,
+        cookies,
+        session.browser,
+        session.profile,
+        session.visitor_id,
+    )
+    .await
+    .ok()
 }

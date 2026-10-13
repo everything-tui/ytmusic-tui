@@ -33,6 +33,8 @@ pub async fn fetch_art(
 pub struct Cover {
     pub pixels: Option<Arc<ArtPixels>>,
     pub image: Option<Arc<image::DynamicImage>>,
+    /// Accent color derived from the cover's dominant hue.
+    pub accent: Option<(u8, u8, u8)>,
 }
 
 /// Longest side of the full-resolution cover kept for graphics protocols.
@@ -59,7 +61,8 @@ pub struct ArtPixels {
 }
 
 impl ArtPixels {
-    pub const SIZE: u32 = 96;
+    /// Higher than a typical half-block cover so small Home cards stay crisp.
+    pub const SIZE: u32 = 192;
 
     pub fn load(path: &Path) -> Result<Self> {
         let img = image::open(path)?.into_rgb8();
@@ -79,13 +82,23 @@ impl ArtPixels {
         })
     }
 
-    /// Box-filtered sample of the region covering fractional coords [x0,x1)×[y0,y1).
+    /// Sample the region covering fractional coords [x0,x1)×[y0,y1).
+    ///
+    /// Uses a tight box around the cell center so half-block covers stay sharp
+    /// instead of looking like a soft average of many source pixels.
     pub fn sample(&self, x0: f32, y0: f32, x1: f32, y1: f32) -> (u8, u8, u8) {
         let s = self.size as f32;
-        let xa = (x0 * s).floor().clamp(0.0, s - 1.0) as u32;
-        let ya = (y0 * s).floor().clamp(0.0, s - 1.0) as u32;
-        let xb = ((x1 * s).ceil() as u32).clamp(xa + 1, self.size);
-        let yb = ((y1 * s).ceil() as u32).clamp(ya + 1, self.size);
+        let cx = (x0 + x1) * 0.5;
+        let cy = (y0 + y1) * 0.5;
+        let rw = ((x1 - x0) * s).max(1.0);
+        let rh = ((y1 - y0) * s).max(1.0);
+        // Keep ~35% of the cell so edges stay defined without full-box blur.
+        let half_w = (rw * 0.175).max(0.5);
+        let half_h = (rh * 0.175).max(0.5);
+        let xa = ((cx * s - half_w).floor()).clamp(0.0, s - 1.0) as u32;
+        let ya = ((cy * s - half_h).floor()).clamp(0.0, s - 1.0) as u32;
+        let xb = ((cx * s + half_w).ceil() as u32).clamp(xa + 1, self.size);
+        let yb = ((cy * s + half_h).ceil() as u32).clamp(ya + 1, self.size);
         let (mut r, mut g, mut b, mut n) = (0u32, 0u32, 0u32, 0u32);
         for y in ya..yb {
             for x in xa..xb {
@@ -176,38 +189,65 @@ async fn download_art_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u
     Err(last_err)
 }
 
+/// Picks the hue that covers the most of the artwork (weighted by saturation), so a cover
+/// that is mostly blue yields blue even when it has a small bright accent elsewhere.
 pub fn extract_accent(path: &Path) -> Result<(u8, u8, u8)> {
+    const BINS: usize = 36;
+    const SIDE: u32 = 64;
     let img = image::open(path)?.into_rgb8();
-    let (w, h) = img.dimensions();
-    // Downscale for color-thief
-    let small = image::imageops::resize(&img, w.min(100), h.min(100), image::imageops::FilterType::Triangle);
-    let colors = color_thief::get_palette(small.as_raw(), color_thief::ColorFormat::Rgb, 10, 5)
-        .map_err(|e| anyhow::anyhow!("color-thief: {e:?}"))?;
+    let small = image::imageops::resize(&img, SIDE, SIDE, image::imageops::FilterType::Triangle);
 
-    let mut best: Option<(u8, u8, u8, f32)> = None;
-    for c in colors {
-        let (h, s, l) = rgb_to_hsl(c.r, c.g, c.b);
-        let _ = h;
-        // Prefer saturated mid-lightness
-        if s < 0.25 {
+    let mut weight = [0f32; BINS];
+    let mut sat = [0f32; BINS];
+    let mut lit = [0f32; BINS];
+    let mut sin = [0f32; BINS];
+    let mut cos = [0f32; BINS];
+    let mut chromatic = 0f32;
+    for p in small.pixels() {
+        let (h, s, l) = rgb_to_hsl(p[0], p[1], p[2]);
+        if s < 0.2 || !(0.1..=0.93).contains(&l) {
             continue;
         }
-        let l_clamped = l.clamp(0.55, 0.75);
-        let score = s * (1.0 - (l - l_clamped).abs());
-        match best {
-            Some((_, _, _, bs)) if bs >= score => {}
-            _ => best = Some((c.r, c.g, c.b, score)),
-        }
+        chromatic += 1.0;
+        let w = s * (1.0 - (2.0 * (l - 0.5)).abs() * 0.5);
+        let bin = ((h * BINS as f32) as usize).min(BINS - 1);
+        let ang = h * std::f32::consts::TAU;
+        weight[bin] += w;
+        sat[bin] += s * w;
+        lit[bin] += l * w;
+        sin[bin] += ang.sin() * w;
+        cos[bin] += ang.cos() * w;
     }
 
-    if let Some((r, g, b, _)) = best {
-        let (h, s, _) = rgb_to_hsl(r, g, b);
-        let (r, g, b) = hsl_to_rgb(h, s.max(0.45), 0.62);
+    // Black-and-white or very muted covers: a soft neutral instead of a random hue.
+    if chromatic / ((SIDE * SIDE) as f32) < 0.08 {
+        let (r, g, b) = hsl_to_rgb(0.0, 0.0, 0.82);
         return Ok((r, g, b));
     }
 
-    // Fallback: average
-    Ok((255, 0, 51))
+    // Strongest hue neighbourhood (three adjacent bins, wrapping around the colour wheel).
+    let window = |i: usize| [(i + BINS - 1) % BINS, i, (i + 1) % BINS];
+    let center = (0..BINS)
+        .max_by(|&a, &b| {
+            let wa: f32 = window(a).iter().map(|&k| weight[k]).sum();
+            let wb: f32 = window(b).iter().map(|&k| weight[k]).sum();
+            wa.total_cmp(&wb)
+        })
+        .unwrap_or(0);
+    let (mut w, mut s, mut l, mut sn, mut cs) = (0f32, 0f32, 0f32, 0f32, 0f32);
+    for k in window(center) {
+        w += weight[k];
+        s += sat[k];
+        l += lit[k];
+        sn += sin[k];
+        cs += cos[k];
+    }
+    let w = w.max(f32::EPSILON);
+    let hue = (sn.atan2(cs) / std::f32::consts::TAU).rem_euclid(1.0);
+    // Keep the accent vivid and readable on the dark UI without changing its hue.
+    let sat = (s / w).clamp(0.5, 0.9);
+    let light = (l / w).clamp(0.56, 0.7);
+    Ok(hsl_to_rgb(hue, sat, light))
 }
 
 fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
@@ -283,5 +323,31 @@ pub fn art_path_for(paths: &Paths, video_id: &str) -> Option<PathBuf> {
         Some(p)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod accent_tests {
+    use super::*;
+
+    fn accent_of(name: &str, fill: impl Fn(u32, u32) -> [u8; 3]) -> (u8, u8, u8) {
+        let img = image::RgbImage::from_fn(100, 100, |x, y| image::Rgb(fill(x, y)));
+        let path = std::env::temp_dir().join(format!("yt-tui-accent-{}-{name}.png", std::process::id()));
+        img.save(&path).unwrap();
+        let out = extract_accent(&path).unwrap();
+        let _ = std::fs::remove_file(path);
+        out
+    }
+
+    #[test]
+    fn mostly_blue_cover_with_red_spot_is_blue() {
+        let (r, _, b) = accent_of("blue", |x, y| if x < 8 && y < 8 { [230, 20, 20] } else { [30, 80, 200] });
+        assert!(b > r, "expected blue accent, got r={r} b={b}");
+    }
+
+    #[test]
+    fn grayscale_cover_is_neutral() {
+        let (r, g, b) = accent_of("gray", |x, _| { let v = (x * 2) as u8; [v, v, v] });
+        assert!(r.abs_diff(g) < 6 && g.abs_diff(b) < 6);
     }
 }

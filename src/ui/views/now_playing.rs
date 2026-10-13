@@ -124,7 +124,7 @@ impl<'a> FullscreenNowPlaying<'a> {
             repeat: self.repeat,
             liked: self.liked,
         };
-        hit.buttons.extend(render_controls(buf, ctrl_row, &c, theme));
+        hit.buttons.extend(render_controls(buf, ctrl_row, &c, theme, Some(&self.cover)));
         if ctrl_row.width >= 80 {
             let vol = Rect {
                 x: ctrl_row.x + ctrl_row.width - 24,

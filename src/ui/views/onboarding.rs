@@ -20,7 +20,7 @@ pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, status: &str) {
     buf.set_string(center(pitch), r.y + 2, pitch, theme.dim());
 
     let options = [
-        ("Enter", "Sign in with your browser"),
+        ("Enter", "Sign in (paste cURL once)"),
         ("G", "Continue as guest"),
         ("P", "Paste a cookie manually"),
     ];

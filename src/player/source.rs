@@ -209,6 +209,11 @@ pub struct GrowingFileReader {
 }
 
 impl GrowingFileReader {
+    fn is_fully_buffered(&self) -> bool {
+        let g = self.inner.0.lock();
+        g.complete && g.failed.is_none()
+    }
+
     fn ensure_file(&mut self) -> std::io::Result<&mut File> {
         // Retry briefly: rename `.part` → final can race the first open.
         let mut last_err = None;
@@ -384,18 +389,24 @@ pub fn make_visualizer_ring(capacity: usize) -> (HeapProd<f32>, ringbuf::HeapCon
 impl symphonia::core::io::MediaSource for GrowingFileReader {
     fn is_seekable(&self) -> bool {
         let g = self.inner.0.lock();
-        // rodio's ReadSeekSource claims seekable with unknown length, which makes
-        // Symphonia's isomp4 demuxer hit SeekError(Unseekable) on DASH fMP4.
-        // Only advertise seekability once the full file is on disk.
-        g.complete && g.failed.is_none()
+        // YouTube DASH/fMP4 carries a segment index with absolute packet offsets.
+        // Symphonia needs a seekable MediaSource (with known byte_len) to jump to
+        // those offsets while the file is still growing — otherwise demux dies with
+        // "packet out-of-bounds for a non-seekable stream" after a few seconds.
+        // Seek/Read on GrowingFileReader already block until the bytes exist.
+        // Never claim seekable without a length (rodio/Symphonia panic on that).
+        g.failed.is_none() && (g.complete || g.expected.is_some_and(|n| n > 0))
     }
 
     fn byte_len(&self) -> Option<u64> {
         let g = self.inner.0.lock();
-        if g.complete && g.failed.is_none() {
+        if g.failed.is_some() {
+            return None;
+        }
+        if g.complete {
             Some(g.len)
         } else {
-            None
+            g.expected.filter(|&n| n > 0)
         }
     }
 }
@@ -418,13 +429,14 @@ impl SymphoniaSource {
     pub fn open(reader: GrowingFileReader, extension: &str) -> Result<Self> {
         use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
         use symphonia::core::formats::FormatOptions;
-        use symphonia::core::io::{MediaSource, MediaSourceStream};
+        use symphonia::core::io::MediaSourceStream;
         use symphonia::core::meta::MetadataOptions;
         use symphonia::core::probe::Hint;
 
-        // Gapless seeks during probe require a seekable source with known length.
-        // While the file is still growing we must keep gapless off.
-        let gapless = MediaSource::is_seekable(&reader);
+        // Gapless probe may touch the end of the file; only enable it once the
+        // download is finished. Progressive DASH still advertises seekability via
+        // MediaSource when `expected` length is known (see GrowingFileReader).
+        let gapless = reader.is_fully_buffered();
         let mss = MediaSourceStream::new(Box::new(reader), Default::default());
         let mut hint = Hint::new();
         hint.with_extension(extension);
@@ -639,7 +651,29 @@ mod decode_tests {
     use std::path::PathBuf;
 
     fn sample_path() -> PathBuf {
-        PathBuf::from("/Users/francoisegner/Library/Caches/com.yt-tui.yt-tui/audio/3QY9AzTHoio.m4a")
+        // Prefer a larger DASH m4a so progressive demux exercises the sidx path.
+        let dir = PathBuf::from("/Users/francoisegner/Library/Caches/com.yt-tui.yt-tui/audio");
+        let mut best: Option<(u64, PathBuf)> = None;
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) != Some("m4a") {
+                    continue;
+                }
+                if p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with(".part"))
+                {
+                    continue;
+                }
+                let len = e.metadata().map(|m| m.len()).unwrap_or(0);
+                if len > best.as_ref().map(|(l, _)| *l).unwrap_or(0) {
+                    best = Some((len, p));
+                }
+            }
+        }
+        best.map(|(_, p)| p).unwrap_or_else(|| dir.join("3QY9AzTHoio.m4a"))
     }
 
     #[test]
@@ -666,7 +700,8 @@ mod decode_tests {
         let _ = std::fs::create_dir_all(&dir);
         let part = dir.join("partial.m4a");
         let gf = GrowingFile::create(&part).unwrap();
-        let first = data.len().min(300 * 1024);
+        // Small prefix reproduces the DASH sidx / non-seekable out-of-bounds bug.
+        let first = data.len().min(96 * 1024);
         gf.append(&data[..first]).unwrap();
         gf.set_expected_len(data.len() as u64);
 
@@ -676,12 +711,15 @@ mod decode_tests {
             std::thread::sleep(std::time::Duration::from_millis(80));
             for chunk in rest.chunks(64 * 1024) {
                 gf2.append(chunk).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
             gf2.mark_complete();
         });
 
         let mut src = open_decoder(gf).expect("partial open");
-        // Should produce audio from the already-buffered prefix without panicking.
-        assert!(src.by_ref().take(2_000).count() > 0);
+        // Drain well past the initial buffer — this used to die with
+        // "packet out-of-bounds for a non-seekable stream".
+        let n = src.by_ref().take(480_000).count();
+        assert!(n > 200_000, "expected sustained progressive decode, got {n}");
     }
 }

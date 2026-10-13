@@ -417,8 +417,11 @@ async fn resolve_download(
             .await
     }
 
-    // Up to one failover: if the CDN 403s, skip that player client and try the next.
-    for attempt in 0..2 {
+    // Failover ladder for CDN 403 / stale URLs:
+    //  0 → soft retry (fresh visitor + same clients)
+    //  1 → skip the client that 403'd and try the next
+    //  2 → last chance after another soft refresh
+    for attempt in 0..3 {
         if !alive() {
             return None;
         }
@@ -455,9 +458,10 @@ async fn resolve_download(
                     }),
                 );
                 // #endregion
-                if attempt == 0 {
+                if attempt < 2 {
                     warn!("resolve failed for {title}: {e}, retrying…");
                     resolver.invalidate(video_id).await;
+                    resolver.clear_visitor().await;
                     continue;
                 }
                 if alive() {
@@ -511,26 +515,36 @@ async fn resolve_download(
                 if !alive() {
                     return None;
                 }
-                warn!(
-                    "download failed for {title} via {client_name}: {e}; {}",
-                    if attempt == 0 {
-                        "skipping client and re-resolving…"
-                    } else {
-                        "giving up"
+                let next = match attempt {
+                    0 => "refreshing visitor and re-resolving…",
+                    1 => "skipping client and re-resolving…",
+                    _ => "giving up",
+                };
+                warn!("download failed for {title} via {client_name}: {e}; {next}");
+                match attempt {
+                    0 => {
+                        // Soft retry: googlevideo 403 is often a stale URL / visitor,
+                        // not a permanently broken client. Don't skip VISIONOS yet.
+                        resolver.invalidate(video_id).await;
+                        resolver.clear_visitor().await;
+                        continue;
                     }
-                );
-                if attempt == 0 {
-                    resolver
-                        .invalidate_skipping_client(video_id, &client_name)
-                        .await;
-                    continue;
+                    1 => {
+                        resolver
+                            .invalidate_skipping_client(video_id, &client_name)
+                            .await;
+                        resolver.clear_visitor().await;
+                        continue;
+                    }
+                    _ => {
+                        if alive() {
+                            let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
+                                "Couldn't play {title} — skipping"
+                            ))));
+                        }
+                        return None;
+                    }
                 }
-                if alive() {
-                    let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
-                        "Couldn't play {title} — skipping"
-                    ))));
-                }
-                return None;
             }
         }
     }

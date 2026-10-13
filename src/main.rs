@@ -43,7 +43,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Sign in via browser cookie auto-fetch
+    /// Explains how to sign in (done inside the app)
     Login,
     /// Clear stored credentials
     Logout,
@@ -105,26 +105,11 @@ fn main() -> Result<()> {
     }
 }
 
-async fn cli_login(paths: Arc<Paths>) -> Result<()> {
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    println!("Opening music.youtube.com — please sign in…");
-    tokio::spawn(auth::poll_browser_login(paths.clone(), tx));
-    while let Some(ev) = rx.recv().await {
-        match ev {
-            AppEvent::AuthState(AuthStateEvent::SignedIn(s)) => {
-                println!(
-                    "Signed in as {}",
-                    s.account_name.as_deref().unwrap_or("user")
-                );
-                return Ok(());
-            }
-            AppEvent::AuthState(AuthStateEvent::Failed(e)) => {
-                anyhow::bail!("{e}");
-            }
-            _ => {}
-        }
-    }
-    anyhow::bail!("login cancelled");
+async fn cli_login(_paths: Arc<Paths>) -> Result<()> {
+    anyhow::bail!(
+        "Sign in from inside the app: press L (or P), then paste a cURL request or cookie header \
+         copied from music.youtube.com."
+    )
 }
 
 async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Result<()> {
@@ -153,7 +138,8 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
 
     // API worker
     let (api_cmd_tx, api_cmd_rx) = mpsc::unbounded_channel::<Command>();
-    api::spawn_api_worker(cookies.clone(), api_cmd_rx, event_tx.clone());
+    api::spawn_api_worker(paths.clone(), cookies.clone(), api_cmd_rx, event_tx.clone());
+    tokio::spawn(auth::keepalive_loop(paths.clone(), api_cmd_tx.clone()));
 
     // Player service lives in a dedicated task
     let paths_p = paths.clone();
@@ -280,11 +266,6 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
     tokio::spawn(async move {
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
-                Command::BeginBrowserLogin => {
-                    let paths = paths_c.clone();
-                    let tx = event_tx_c.clone();
-                    tokio::spawn(auth::poll_browser_login(paths, tx));
-                }
                 Command::ValidateCookies {
                     cookies,
                     visitor_id,
@@ -384,38 +365,18 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
                     }
                 }
                 Err(e) => {
-                    // Attempt a silent browser refresh before declaring expiry.
-                    let mut svc = AuthService::new(paths_v.clone());
-                    let refreshed = svc.silent_refresh().ok().unwrap_or(false);
-                    if refreshed {
-                        if let Some(s) = svc.session().cloned() {
-                            match auth::validate_and_save(
-                                paths_v.clone(),
-                                s.cookies,
-                                s.browser,
-                                s.profile,
-                            )
-                            .await
-                            {
-                                Ok(session) => {
-                                    let _ = api_v.send(Command::ApplyAuth(session.clone()));
-                                    let _ = tx_v.send(AppEvent::AuthState(
-                                        AuthStateEvent::SignedIn(session),
-                                    ));
-                                    return;
-                                }
-                                Err(e2) => {
-                                    let _ = tx_v.send(AppEvent::AuthState(
-                                        AuthStateEvent::SessionExpired(e2.to_string()),
-                                    ));
-                                    return;
-                                }
-                            }
+                    // Rotate the session's cookies like a browser would before giving up.
+                    match auth::recover_session(paths_v.clone()).await {
+                        Some(session) => {
+                            let _ = api_v.send(Command::ApplyAuth(session.clone()));
+                            let _ = tx_v.send(AppEvent::AuthState(AuthStateEvent::SignedIn(session)));
+                        }
+                        None => {
+                            let _ = tx_v.send(AppEvent::AuthState(AuthStateEvent::SessionExpired(
+                                e.to_string(),
+                            )));
                         }
                     }
-                    let _ = tx_v.send(AppEvent::AuthState(AuthStateEvent::SessionExpired(
-                        e.to_string(),
-                    )));
                 }
             }
         });

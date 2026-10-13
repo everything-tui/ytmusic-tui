@@ -26,8 +26,10 @@ pub struct Downloader {
 impl Downloader {
     pub fn new(cache_dir: PathBuf, max_mb: u64) -> Self {
         // Default UA is overwritten on every request by `ResolvedStream.headers`.
+        // No gzip: googlevideo Range/206 bodies are already compressed audio; asking
+        // for content-encoding has caused intermittent CDN 403s / truncated reads.
         let client = reqwest::Client::builder()
-            .gzip(true)
+            .gzip(false)
             .build()
             .expect("reqwest client");
         Self {

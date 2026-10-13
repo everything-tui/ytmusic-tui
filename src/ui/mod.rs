@@ -1,5 +1,6 @@
 pub mod components;
 pub mod cover;
+pub mod icons;
 pub mod keymap;
 pub mod marquee;
 pub mod theme;
@@ -107,6 +108,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 signed_in: app.signed_in,
                 track: app.current_track(),
                 cover: current_cover,
+                visualizer: &app.visualizer,
                 theme,
             }
             .render(side, buf, &mut hit);
@@ -120,7 +122,17 @@ pub fn draw(frame: &mut Frame, app: &App) {
             blocked: &blocked,
         };
         let full_sidebar = side_w > sidebar::RAIL_W;
-        draw_main(pad(main, 3, 1), buf, app, theme, detail_cover, full_sidebar, &mut hit);
+        draw_main(
+            pad(main, 3, 1),
+            buf,
+            app,
+            theme,
+            detail_cover,
+            graphics,
+            &blocked,
+            full_sidebar,
+            &mut hit,
+        );
         NowPlayingBar {
             track: app.current_track(),
             state: app.playback_state,
@@ -132,7 +144,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
             repeat: app.repeat,
             liked,
             cover: current_cover,
-            visualizer: &app.visualizer,
             marquee: &app.title_marquee,
             theme,
         }
@@ -178,6 +189,8 @@ fn draw_main(
     app: &App,
     theme: &Theme,
     detail_cover: CoverCtx<'_>,
+    graphics: bool,
+    blocked: &[Rect],
     full_sidebar: bool,
     hit: &mut HitMap,
 ) {
@@ -208,6 +221,10 @@ fn draw_main(
                 app.home_shelf_idx,
                 app.home_item_idx,
                 app.loading_home,
+                &app.covers,
+                &app.cover_ui,
+                graphics,
+                blocked,
                 area,
                 buf,
                 theme,
@@ -400,9 +417,10 @@ fn draw_manual_cookie(area: Rect, buf: &mut Buffer, theme: &Theme, input: &str) 
     let steps = [
         "Paste a Cookie header or \"Copy as cURL\" from DevTools.",
         "",
-        "1. Open music.youtube.com and sign in",
+        "1. Open a PRIVATE window, go to music.youtube.com and sign in",
         "2. DevTools → Network → any request → Copy as cURL",
-        "3. Paste here (Cmd+V), then press Enter to submit",
+        "3. Paste here (Cmd+V), press Enter, then close the private window",
+        "yt-tui then keeps this session alive itself — you only do this once.",
     ];
     for (i, s) in steps.iter().enumerate() {
         let style = if i == 0 { theme.normal() } else { theme.dim() };
@@ -467,7 +485,7 @@ fn draw_account_menu(area: Rect, buf: &mut Buffer, theme: &Theme, app: &App) {
         opts.push(("L", "Log out"));
     } else {
         buf.set_string(inner.x, inner.y, "○ Not signed in", theme.dim().patch(bg));
-        opts.push(("Enter", "Sign in with browser"));
+        opts.push(("Enter", "Sign in (paste cURL once)"));
         opts.push(("P", "Paste cookie"));
     }
     for (i, (key, label)) in opts.iter().enumerate() {
@@ -676,6 +694,6 @@ mod tests {
         }
         app.overlay = Overlay::Onboarding;
         let out = render(&app, 100, 30);
-        assert!(out.contains("Sign in with your browser"));
+        assert!(out.contains("Sign in (paste cURL once)"));
     }
 }

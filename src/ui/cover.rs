@@ -1,4 +1,5 @@
 use crate::art::Cover;
+use crate::ui::icons::{self, Icon};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::player_parts::render_art;
 use ratatui::prelude::*;
@@ -16,6 +17,8 @@ pub enum CoverSlot {
     Player,
     Fullscreen,
     Detail,
+    /// Visible Home shelf card; index is stable for the current frame only.
+    Home(u8),
 }
 
 struct SlotState {
@@ -28,6 +31,7 @@ pub struct CoverRenderer {
     picker: Option<Picker>,
     disabled: bool,
     slots: RefCell<HashMap<CoverSlot, SlotState>>,
+    icons: RefCell<HashMap<String, StatefulProtocol>>,
 }
 
 impl Default for CoverRenderer {
@@ -42,6 +46,7 @@ impl CoverRenderer {
             picker: None,
             disabled: false,
             slots: RefCell::new(HashMap::new()),
+            icons: RefCell::new(HashMap::new()),
         }
     }
 
@@ -88,7 +93,43 @@ impl CoverRenderer {
             picker,
             disabled: false,
             slots: RefCell::new(HashMap::new()),
+            icons: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// True when scalable control icons can be drawn as real images.
+    pub fn icons_available(&self) -> bool {
+        !self.disabled && self.picker.is_some()
+    }
+
+    /// Draws a control icon as an image into the square fitted inside `area`.
+    pub fn draw_icon(
+        &self,
+        icon: Icon,
+        fg: (u8, u8, u8),
+        bg: (u8, u8, u8),
+        area: Rect,
+        buf: &mut Buffer,
+    ) -> bool {
+        let Some(picker) = self.picker.as_ref().filter(|_| !self.disabled) else {
+            return false;
+        };
+        let r = self.fit(area);
+        if r.width == 0 || r.height == 0 {
+            return false;
+        }
+        let key = format!("{icon:?}-{}-{}-{}", fg.0, fg.1, fg.2);
+        let mut map = self.icons.borrow_mut();
+        if map.len() > 96 {
+            map.clear();
+        }
+        let proto = map
+            .entry(key)
+            .or_insert_with(|| picker.new_resize_protocol(icons::render(icon, fg, bg)));
+        StatefulImage::default()
+            .resize(Resize::Scale(Some(FilterType::CatmullRom)))
+            .render(r, buf, proto);
+        true
     }
 
     /// Terminal cell size in pixels (or a 1:2 approximation for half-blocks).
@@ -166,7 +207,7 @@ impl CoverRenderer {
             }
             if let Some(state) = slots.get_mut(&slot) {
                 StatefulImage::default()
-                    .resize(Resize::Scale(Some(FilterType::Triangle)))
+                    .resize(Resize::Scale(Some(FilterType::CatmullRom)))
                     .render(r, buf, &mut state.proto);
             }
         }

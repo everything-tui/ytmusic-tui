@@ -8,17 +8,17 @@ use crate::ui::theme::Theme;
 use crate::ui::widgets::player_parts::{
     render_controls, render_progress, render_volume, spinner, ControlsState,
 };
-use crate::ui::widgets::visualizer_widget::render_visualizer;
 use crate::ui::HitMap;
-use crate::visualizer::Visualizer;
 use ratatui::prelude::*;
 use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
 
 /// Height the bar wants for a given terminal height.
 pub fn preferred_height(term_height: u16) -> u16 {
-    if term_height >= 24 {
-        5
+    if term_height >= 30 {
+        7
+    } else if term_height >= 24 {
+        6
     } else {
         4
     }
@@ -35,7 +35,6 @@ pub struct NowPlayingBar<'a> {
     pub repeat: RepeatMode,
     pub liked: bool,
     pub cover: CoverCtx<'a>,
-    pub visualizer: &'a Visualizer,
     pub marquee: &'a Marquee,
     pub theme: &'a Theme,
 }
@@ -45,16 +44,25 @@ impl<'a> NowPlayingBar<'a> {
         let theme = self.theme;
         fill(buf, area, Style::default().bg(theme.bg_player));
         hit.player = Some(area);
+        // Thin accent line separates the player from the content above.
+        for x in 0..area.width {
+            if let Some(cell) = buf.cell_mut((area.x + x, area.y)) {
+                cell.set_symbol("▁").set_fg(theme.accent).set_bg(theme.bg_player);
+            }
+        }
         if area.height < 2 || area.width < 30 {
             return;
         }
 
-        // Three content rows, vertically centered.
-        let rows_h = area.height.min(3);
+        // Row 0 is the divider; keep one blank row below it before the content.
+        let inner_h = area.height - 1;
+        let pad = u16::from(inner_h >= 3);
+        let avail = inner_h - pad;
+        let rows_h = if avail >= 5 { avail - 1 } else { avail };
         let content = Rect {
-            x: area.x + 1,
-            y: area.y + (area.height - rows_h) / 2,
-            width: area.width - 2,
+            x: area.x + 3,
+            y: area.y + 1 + pad,
+            width: area.width.saturating_sub(6),
             height: rows_h,
         };
         let w = content.width;
@@ -82,10 +90,12 @@ impl<'a> NowPlayingBar<'a> {
             repeat: self.repeat,
             liked: self.liked,
         };
+        // Buttons get every row except the progress row and one spacer row.
+        let btn_h = center.height.saturating_sub(2).max(1);
         hit.buttons
-            .extend(render_controls(buf, Rect { height: 1, ..center }, &c, theme));
+            .extend(render_controls(buf, Rect { height: btn_h, ..center }, &c, theme, Some(&self.cover)));
         let prog_w = center.width.min(72);
-        let prog_y = if center.height >= 3 { center.y + 2 } else { center.y + 1 };
+        let prog_y = center.y + center.height - 1;
         if prog_y < center.y + center.height {
             let prog = Rect {
                 x: center.x + (center.width - prog_w) / 2,
@@ -97,7 +107,7 @@ impl<'a> NowPlayingBar<'a> {
             hit.duration = dur;
         }
 
-        // Right: visualizer above volume.
+        // Right: volume bar spans the full right column, aligned with the progress row.
         if right_w > 0 {
             let right = cols[2];
             let vol_row = Rect {
@@ -105,13 +115,6 @@ impl<'a> NowPlayingBar<'a> {
                 height: 1,
                 ..right
             };
-            if right.height >= 2 {
-                let viz = Rect {
-                    height: right.height - 1,
-                    ..right
-                };
-                render_visualizer(self.visualizer, viz, buf, theme, viz.height > 1);
-            }
             hit.volume = Some(render_volume(buf, vol_row, self.volume, self.muted, theme));
         }
     }
@@ -130,7 +133,7 @@ impl<'a> NowPlayingBar<'a> {
                 buf,
                 theme,
             );
-            area.x + art_w + 2
+            area.x + art_w + 3
         } else {
             area.x
         };
@@ -196,7 +199,7 @@ mod tests {
     use crate::api::model::{AlbumRef, ArtistRef};
     use crate::art::{ArtPixels, Cover};
     use crate::ui::cover::CoverRenderer;
-    use crate::visualizer::VisualizerStyle;
+    use crate::visualizer::{Visualizer, VisualizerStyle};
     use std::sync::Arc;
 
     fn dump(buf: &Buffer) -> String {
@@ -241,6 +244,7 @@ mod tests {
         let cover_data = Cover {
             pixels: Some(Arc::new(px)),
             image: None,
+            accent: None,
         };
         let renderer = CoverRenderer::halfblocks();
         let cover = CoverCtx {
@@ -275,7 +279,7 @@ mod tests {
         assert_eq!(hit.buttons.len(), 6);
         assert!(out.contains("Blinding Lights"));
 
-        for (w, h) in [(120u16, 5u16), (80, 4), (60, 4)] {
+        for (w, h) in [(120u16, 8u16), (120, 7), (120, 6), (80, 4), (60, 4)] {
             let area = Rect::new(0, 0, w, h);
             let mut buf = Buffer::empty(area);
             let mut hit = HitMap::default();
@@ -290,7 +294,6 @@ mod tests {
                 repeat: RepeatMode::All,
                 liked: true,
                 cover,
-                visualizer: &viz,
                 marquee: &marquee,
                 theme: &theme,
             }

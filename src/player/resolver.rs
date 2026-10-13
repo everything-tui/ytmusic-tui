@@ -24,17 +24,7 @@ struct PlayerClient {
     web_headers: bool,
 }
 
-/// yt-dlp authenticated default #1 — plaintext adaptive audio, no PO token.
-const WEB_EMBEDDED: PlayerClient = PlayerClient {
-    name: "WEB_EMBEDDED",
-    client_id: "56",
-    version: "2.20260708.00.00",
-    user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)",
-    wants_cookies: true,
-    web_headers: true,
-};
-
-/// yt-dlp JS-less default — no PO token for HTTPS.
+/// yt-dlp JS-less default — plaintext adaptive audio, no PO token.
 const VISIONOS: PlayerClient = PlayerClient {
     name: "VISIONOS",
     client_id: "101",
@@ -44,17 +34,29 @@ const VISIONOS: PlayerClient = PlayerClient {
     web_headers: false,
 };
 
-/// yt-dlp `tv_samsung` — last resort; cookies help avoid DRM-only responses.
-const TV_SAMSUNG: PlayerClient = PlayerClient {
+/// yt-dlp `tv_downgraded` — authenticated fallback (cookies); newer TVHTML5 often DRM-only.
+const TV_DOWNGRADED: PlayerClient = PlayerClient {
     name: "TVHTML5",
     client_id: "7",
-    version: "7.20260707.07.00",
-    user_agent: "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1",
+    version: "5.20260707",
+    user_agent: "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
     wants_cookies: true,
     web_headers: false,
 };
 
-const CLIENTS: &[PlayerClient] = &[WEB_EMBEDDED, VISIONOS, TV_SAMSUNG];
+/// Embed client — useful for some age-gated / embeddable videos; many Music tracks are unavailable.
+const WEB_EMBEDDED: PlayerClient = PlayerClient {
+    name: "WEB_EMBEDDED",
+    client_id: "56",
+    version: "2.20260708.00.00",
+    user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)",
+    wants_cookies: true,
+    web_headers: true,
+};
+
+/// Prefer VISIONOS first so visitor_id is minted for the same client we download with.
+/// WEB_EMBEDDED first caused mismatched visitor ↔ CDN URL pairs (HTTP 403).
+const CLIENTS: &[PlayerClient] = &[VISIONOS, TV_DOWNGRADED, WEB_EMBEDDED];
 
 const PLAYER_URL: &str = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
 const VISITOR_URL: &str = "https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false";
@@ -157,9 +159,15 @@ impl Resolver {
 
     pub async fn set_cookies(&self, cookies: Option<String>) {
         *self.cookies.lock().await = cookies;
-        // Auth change invalidates any cookie-bound URLs.
+        // Auth change invalidates any cookie-bound URLs / visitors.
         self.cache.lock().await.clear();
         self.skip_clients.lock().await.clear();
+        *self.visitor_data.lock().await = None;
+    }
+
+    /// Drop sticky visitor so the next resolve mints a fresh one (CDN 403 recovery).
+    pub async fn clear_visitor(&self) {
+        *self.visitor_data.lock().await = None;
     }
 
     pub async fn resolve(&self, video_id: &str) -> Result<ResolvedStream> {
@@ -299,20 +307,17 @@ impl Resolver {
         let parsed: PlayerResponse =
             serde_json::from_str(&text).context("parsing player JSON")?;
 
-        if let Some(vd) = parsed
+        // Bind CDN fetches to the visitor that minted THIS url — a sticky visitor
+        // from another client (e.g. WEB_EMBEDDED) is a common googlevideo 403 cause.
+        let visitor_for_cdn = parsed
             .response_context
             .as_ref()
             .and_then(|c| c.visitor_data.clone())
-        {
-            let mut slot = self.visitor_data.lock().await;
-            if slot.is_none() {
-                *slot = Some(vd);
-            }
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| visitor.clone());
+        if !visitor_for_cdn.is_empty() {
+            *self.visitor_data.lock().await = Some(visitor_for_cdn.clone());
         }
-        let visitor_for_cdn = {
-            let slot = self.visitor_data.lock().await;
-            slot.clone().unwrap_or(visitor)
-        };
 
         let playability = parsed.playability.as_ref();
         let status_str = playability
@@ -534,15 +539,12 @@ fn client_context(client: PlayerClient, visitor: &str) -> serde_json::Value {
             "osVersion": "26.5.23O471",
             "userAgent": client.user_agent
         }),
+        // tv_downgraded — no Samsung device fields; Cobalt UA matches yt-dlp.
         _ => serde_json::json!({
             "clientName": "TVHTML5",
             "clientVersion": client.version,
             "hl": "en",
             "gl": "US",
-            "deviceMake": "Samsung",
-            "deviceModel": "UKS9800",
-            "osName": "Tizen",
-            "osVersion": "2.4.0",
             "userAgent": client.user_agent
         }),
     };

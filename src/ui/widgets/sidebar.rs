@@ -4,7 +4,9 @@ use crate::ui::components::{fill, truncate};
 use crate::ui::cover::{CoverCtx, CoverSlot};
 use crate::ui::theme::Theme;
 use crate::ui::views::library::SECTIONS;
+use crate::ui::widgets::visualizer_widget::render_visualizer;
 use crate::ui::HitMap;
+use crate::visualizer::Visualizer;
 use ratatui::prelude::*;
 use unicode_width::UnicodeWidthStr;
 
@@ -39,6 +41,7 @@ pub struct Sidebar<'a> {
     pub signed_in: bool,
     pub track: Option<&'a Track>,
     pub cover: CoverCtx<'a>,
+    pub visualizer: &'a Visualizer,
     pub theme: &'a Theme,
 }
 
@@ -185,6 +188,16 @@ impl<'a> Sidebar<'a> {
             return;
         }
         let top = footer_top - need;
+        // Visualizer sits directly above the cover when there is room for it.
+        const VIZ_H: u16 = 3;
+        let room = footer_top - nav_end - 1;
+        if room >= need + VIZ_H + 1 {
+            let viz = Rect::new(x, top - VIZ_H - 1, side, VIZ_H);
+            render_visualizer(self.visualizer, viz, buf, theme, true);
+        } else if room >= need + 2 {
+            let viz = Rect::new(x, top - 2, side, 1);
+            render_visualizer(self.visualizer, viz, buf, theme, false);
+        }
         let cover_area = Rect::new(x, top, side, cover_rows);
         let r = self.cover.draw(CoverSlot::Sidebar, cover_area, buf, theme);
         hit.buttons.push((r, Action::ToggleNowPlaying));

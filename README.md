@@ -2,7 +2,7 @@
 
 **YouTube Music in the terminal** — a polished media-player TUI written in Rust.
 
-Search, play, queue, library, radio, synced lyrics, album-art-driven accents, an FFT visualizer, and macOS Now Playing / media keys. Sign-in is zero-friction: press Enter, log in in your browser, done.
+Search, play, queue, library, radio, synced lyrics, album-art-driven accents, an FFT visualizer, and macOS Now Playing / media keys. Sign in once by pasting a cURL request; yt-tui then keeps the session alive on its own.
 
 ## Install
 
@@ -35,7 +35,7 @@ yt-tui
 CLI helpers:
 
 ```bash
-yt-tui login     # browser sign-in only
+yt-tui login     # prints sign-in instructions
 yt-tui logout
 yt-tui doctor    # print environment diagnostics
 yt-tui --debug   # verbose file logging
@@ -71,12 +71,11 @@ yt-tui --debug   # verbose file logging
 
 ## Sign-in details
 
-1. **Browser (recommended)** — yt-tui opens YouTube Music and reads session cookies from Firefox, Chrome, Brave, Edge, Arc, Vivaldi, Opera, or Safari via [`rookie`](https://crates.io/crates/rookie).
-2. On macOS, Chromium browsers may show a **Keychain** prompt — click **Always Allow**.
+1. **Paste once** — open a *private* window, sign in at music.youtube.com, copy any request as cURL (DevTools → Network) and paste it in yt-tui (`L` or `P`). Then close the private window.
+2. yt-tui owns that session from then on: it rotates the short-lived cookies in the background the way a browser tab does, so you stay signed in. No browser access or Full Disk Access is needed.
 3. **Guest** — search and play without an account (no library / likes).
-4. **Paste cookie** — last resort: paste a `Cookie` header or “Copy as cURL” from DevTools.
 
-Credentials are stored in the OS keychain (`yt-tui` / `cookies`), with a `0600` file fallback under the app data directory.
+The session is stored in a `0600` file (`auth.json`) under the app data directory. The OS keychain is not used, so there are no password prompts.
 
 ## Config
 

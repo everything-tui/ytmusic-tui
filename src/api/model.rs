@@ -139,6 +139,35 @@ pub enum ShelfItem {
     Artist(Artist),
 }
 
+impl ShelfItem {
+    /// Cache key for `App.covers` / `FetchArt`.
+    pub fn cover_key(&self) -> &str {
+        match self {
+            Self::Track(t) => &t.video_id,
+            Self::Album(a) => &a.id,
+            Self::Playlist(p) => &p.id,
+            Self::Artist(a) => &a.id,
+        }
+    }
+
+    /// Best thumbnail URL for this shelf card, if Innertube provided one.
+    pub fn art_url(&self) -> Option<String> {
+        match self {
+            Self::Track(t) => t.art_url(),
+            Self::Album(a) => best_thumb_url(&a.thumbnails),
+            Self::Playlist(p) => best_thumb_url(&p.thumbnails),
+            Self::Artist(a) => best_thumb_url(&a.thumbnails),
+        }
+    }
+}
+
+fn best_thumb_url(thumbnails: &[Thumbnail]) -> Option<String> {
+    thumbnails
+        .iter()
+        .max_by_key(|t| t.width.unwrap_or(0))
+        .map(|t| t.url.clone())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Shelf {
     pub title: String,

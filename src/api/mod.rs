@@ -5,30 +5,40 @@ pub mod ytmapi;
 use crate::action::{AppEvent, AuthStateEvent, Command, SearchFilter};
 use crate::api::innertube::InnertubeClient;
 use crate::api::model::*;
-use crate::auth::AuthSession;
+use crate::auth::{AuthService, AuthSession};
+use crate::paths::Paths;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 use tracing::warn;
 
-fn emit_api_error(tx: &mpsc::UnboundedSender<AppEvent>, e: anyhow::Error) {
-    let msg = e.to_string();
-    if msg.contains("SESSION_EXPIRED") {
-        let _ = tx.send(AppEvent::AuthState(AuthStateEvent::SessionExpired(msg)));
-    } else {
-        let _ = tx.send(AppEvent::Error(msg));
-    }
-}
 
 pub struct ApiService {
     client: InnertubeClient,
     tx: mpsc::UnboundedSender<AppEvent>,
+    paths: Arc<Paths>,
+    /// Guards browser-based session recovery so parallel failures trigger it only once.
+    recovery: Arc<Mutex<RecoveryState>>,
+}
+
+#[derive(Default)]
+struct RecoveryState {
+    running: bool,
+    last_ok: Option<Instant>,
 }
 
 impl ApiService {
-    pub fn new(cookies: Option<String>, tx: mpsc::UnboundedSender<AppEvent>) -> Result<Self> {
+    pub fn new(
+        cookies: Option<String>,
+        tx: mpsc::UnboundedSender<AppEvent>,
+        paths: Arc<Paths>,
+    ) -> Result<Self> {
         Ok(Self {
             client: InnertubeClient::new(cookies)?,
             tx,
+            paths,
+            recovery: Arc::new(Mutex::new(RecoveryState::default())),
         })
     }
 
@@ -49,10 +59,74 @@ impl ApiService {
         Self {
             client: self.client.clone(),
             tx: self.tx.clone(),
+            paths: self.paths.clone(),
+            recovery: self.recovery.clone(),
+        }
+    }
+
+    /// Reports an API failure. A signed-out response first tries to re-read the session
+    /// from the browser so the user is only asked to log in when that really fails.
+    async fn emit_api_error(&mut self, e: anyhow::Error) {
+        let msg = e.to_string();
+        if !msg.contains("SESSION_EXPIRED") {
+            let _ = self.tx.send(AppEvent::Error(msg));
+            return;
+        }
+        {
+            let mut r = self.recovery.lock().unwrap();
+            if r.running {
+                return;
+            }
+            let recent = r.last_ok.is_some_and(|t| t.elapsed() < Duration::from_secs(60));
+            if recent {
+                drop(r);
+                let _ = self.tx.send(AppEvent::AuthState(AuthStateEvent::SessionExpired(msg)));
+                return;
+            }
+            r.running = true;
+        }
+        let recovered = self.recover_session().await;
+        {
+            let mut r = self.recovery.lock().unwrap();
+            r.running = false;
+            if recovered.is_some() {
+                r.last_ok = Some(Instant::now());
+            }
+        }
+        match recovered {
+            Some(session) => {
+                self.client.apply_session(&session);
+                let _ = self.tx.send(AppEvent::AuthState(AuthStateEvent::SignedIn(session)));
+            }
+            None => {
+                let _ = self.tx.send(AppEvent::AuthState(AuthStateEvent::SessionExpired(msg)));
+            }
+        }
+    }
+
+    async fn recover_session(&self) -> Option<AuthSession> {
+        crate::auth::recover_session(self.paths.clone()).await
+    }
+
+    /// Saves session cookies Google rotated since the last call.
+    fn persist_rotated_cookies(&self) {
+        if let Some(cookies) = self.client.take_rotated_cookies() {
+            let paths = self.paths.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut svc = AuthService::new(paths);
+                if let Err(e) = svc.update_cookies(cookies) {
+                    warn!("could not persist rotated cookies: {e}");
+                }
+            });
         }
     }
 
     pub async fn handle(&mut self, cmd: Command) {
+        self.handle_inner(cmd).await;
+        self.persist_rotated_cookies();
+    }
+
+    async fn handle_inner(&mut self, cmd: Command) {
         match cmd {
             Command::Search { query, filter } => {
                 let filter_str = match filter {
@@ -122,7 +196,7 @@ impl ApiService {
                     let _ = self.tx.send(AppEvent::LibraryPlaylists(p));
                 }
                 Err(e) => {
-                    emit_api_error(&self.tx, e.context("Library playlists"));
+                    self.emit_api_error(e.context("Library playlists")).await;
                 }
             },
             Command::LoadLikedSongs => match self.client.liked_songs().await {
@@ -130,7 +204,7 @@ impl ApiService {
                     let _ = self.tx.send(AppEvent::LikedSongs(t));
                 }
                 Err(e) => {
-                    emit_api_error(&self.tx, e.context("Liked songs"));
+                    self.emit_api_error(e.context("Liked songs")).await;
                 }
             },
             Command::LoadLibraryAlbums => match self.client.library_albums().await {
@@ -138,7 +212,7 @@ impl ApiService {
                     let _ = self.tx.send(AppEvent::LibraryAlbums(a));
                 }
                 Err(e) => {
-                    emit_api_error(&self.tx, e.context("Library albums"));
+                    self.emit_api_error(e.context("Library albums")).await;
                 }
             },
             Command::LoadLibraryArtists => match self.client.library_artists().await {
@@ -146,7 +220,7 @@ impl ApiService {
                     let _ = self.tx.send(AppEvent::LibraryArtists(a));
                 }
                 Err(e) => {
-                    emit_api_error(&self.tx, e.context("Library artists"));
+                    self.emit_api_error(e.context("Library artists")).await;
                 }
             },
             Command::LoadHistory => match self.client.history().await {
@@ -154,7 +228,7 @@ impl ApiService {
                     let _ = self.tx.send(AppEvent::History(t));
                 }
                 Err(e) => {
-                    emit_api_error(&self.tx, e.context("History"));
+                    self.emit_api_error(e.context("History")).await;
                 }
             },
             Command::LoadRadio(video_id) => match self.client.watch_playlist(&video_id).await {
@@ -228,12 +302,13 @@ impl ApiService {
 }
 
 pub fn spawn_api_worker(
+    paths: Arc<Paths>,
     cookies: Option<String>,
     mut cmd_rx: mpsc::UnboundedReceiver<Command>,
     event_tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
-        let api = match ApiService::new(cookies, event_tx.clone()) {
+        let api = match ApiService::new(cookies, event_tx.clone(), paths) {
             Ok(a) => a,
             Err(e) => {
                 let _ = event_tx.send(AppEvent::Error(format!("API init failed: {e}")));

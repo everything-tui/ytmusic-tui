@@ -150,7 +150,6 @@ pub enum Command {
     AddToPlaylist { playlist_id: String, video_ids: Vec<String> },
     CreatePlaylist { title: String },
     FetchArt { url: String, video_id: String },
-    BeginBrowserLogin,
     /// UI → main: validate & persist a pasted cookie / cURL.
     ValidateCookies {
         cookies: String,
