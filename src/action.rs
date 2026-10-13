@@ -33,6 +33,8 @@ pub enum Action {
     EqPreset(usize),
     /// Reset all bands to Flat.
     EqFlat,
+    /// Cycle Adaptive EQ taste profile (Off → Balanced → Bass → Vocal → Bright).
+    EqAdaptiveCycle,
 
     // Playback
     PlayPause,

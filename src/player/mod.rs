@@ -1,12 +1,14 @@
 pub mod download;
 pub mod engine;
 pub mod eq;
+pub mod eq_adaptive;
 pub mod queue;
 pub mod resolver;
 pub mod source;
 
 pub use engine::SampleBuffer;
 pub use eq::{EqHandle, EqParams, BAND_COUNT, BAND_LABELS, GAIN_MAX_DB, GAIN_MIN_DB, PRESETS};
+pub use eq_adaptive::{AdaptiveEq, AdaptiveProfile};
 
 use crate::action::{AppEvent, PlayerEvent};
 use crate::api::model::Track;
@@ -101,6 +103,17 @@ impl PlayerService {
     }
 
     pub async fn set_cookies(&self, cookies: Option<String>) {
+        // #region agent log
+        crate::debug_log::log(
+            "F",
+            "player/mod.rs:set_cookies",
+            "cookies updated",
+            serde_json::json!({
+                "present": cookies.as_ref().map(|c| !c.is_empty()).unwrap_or(false),
+                "len": cookies.as_ref().map(|c| c.len()).unwrap_or(0),
+            }),
+        );
+        // #endregion
         self.resolver.set_cookies(cookies).await;
     }
 
@@ -164,6 +177,19 @@ impl PlayerService {
 
             // Cached files skip stream resolution entirely (~5s cold-start win on replays).
             let need_resolve = !downloader.is_cached(&video_id);
+            // #region agent log
+            crate::debug_log::log(
+                "E",
+                "player/mod.rs:start_current",
+                "play start",
+                serde_json::json!({
+                    "video_id": video_id,
+                    "title": title,
+                    "cached": !need_resolve,
+                    "epoch": epoch,
+                }),
+            );
+            // #endregion
             let file = if !need_resolve {
                 match GrowingFile::open_complete(&downloader.cached_path(&video_id)) {
                     Ok(f) => Some(f),
@@ -397,8 +423,38 @@ async fn resolve_download(
             return None;
         }
         let stream = match resolver.resolve(video_id).await {
-            Ok(s) => s,
+            Ok(s) => {
+                // #region agent log
+                crate::debug_log::log(
+                    "B",
+                    "player/mod.rs:resolve_download",
+                    "resolve ok",
+                    serde_json::json!({
+                        "video_id": video_id,
+                        "attempt": attempt,
+                        "client": s.client_name,
+                        "filesize": s.filesize,
+                        "ext": s.ext,
+                        "url_host": s.url.split('/').nth(2).unwrap_or(""),
+                        "has_visitor_hdr": s.headers.contains_key("X-Goog-Visitor-Id"),
+                    }),
+                );
+                // #endregion
+                s
+            }
             Err(e) => {
+                // #region agent log
+                crate::debug_log::log(
+                    "B",
+                    "player/mod.rs:resolve_download",
+                    "resolve failed",
+                    serde_json::json!({
+                        "video_id": video_id,
+                        "attempt": attempt,
+                        "error": e.to_string(),
+                    }),
+                );
+                // #endregion
                 if attempt == 0 {
                     warn!("resolve failed for {title}: {e}, retrying…");
                     resolver.invalidate(video_id).await;
@@ -420,10 +476,38 @@ async fn resolve_download(
 
         match download_once(video_id, &stream, downloader, event_tx).await {
             Ok(f) => {
+                // #region agent log
+                crate::debug_log::log(
+                    "A",
+                    "player/mod.rs:resolve_download",
+                    "download ok",
+                    serde_json::json!({
+                        "video_id": video_id,
+                        "attempt": attempt,
+                        "client": client_name,
+                    }),
+                );
+                // #endregion
                 resolver.clear_client_skips(video_id).await;
                 return Some(f);
             }
             Err(e) => {
+                let err = e.to_string();
+                let is_403 = err.contains("403");
+                // #region agent log
+                crate::debug_log::log(
+                    if is_403 { "A" } else { "D" },
+                    "player/mod.rs:resolve_download",
+                    "download failed",
+                    serde_json::json!({
+                        "video_id": video_id,
+                        "attempt": attempt,
+                        "client": client_name,
+                        "error": err,
+                        "is_403": is_403,
+                    }),
+                );
+                // #endregion
                 if !alive() {
                     return None;
                 }

@@ -217,6 +217,18 @@ fn run_engine(
                                 *playing.lock().unwrap() = false;
                                 current_track = None;
                                 current_file = None;
+                                // #region agent log
+                                crate::debug_log::log(
+                                    "E",
+                                    "player/engine.rs:Load",
+                                    "decoder failed",
+                                    serde_json::json!({
+                                        "title": track.title,
+                                        "video_id": track.video_id,
+                                        "error": e.to_string(),
+                                    }),
+                                );
+                                // #endregion
                                 let _ = event_tx.send(PlayerEvent::Error(format!(
                                     "Couldn't play {}: {e}",
                                     track.title

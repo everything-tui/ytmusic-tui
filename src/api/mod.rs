@@ -119,25 +119,9 @@ impl ApiService {
             },
             Command::LoadLibraryPlaylists => match self.client.library_playlists().await {
                 Ok(p) => {
-                    // #region agent log
-                    crate::debug_log::log(
-                        "C",
-                        "api/mod.rs:LoadLibraryPlaylists",
-                        "library_playlists ok",
-                        serde_json::json!({ "count": p.len() }),
-                    );
-                    // #endregion
                     let _ = self.tx.send(AppEvent::LibraryPlaylists(p));
                 }
                 Err(e) => {
-                    // #region agent log
-                    crate::debug_log::log(
-                        "C",
-                        "api/mod.rs:LoadLibraryPlaylists",
-                        "library_playlists err",
-                        serde_json::json!({ "error": e.to_string() }),
-                    );
-                    // #endregion
                     emit_api_error(&self.tx, e.context("Library playlists"));
                 }
             },

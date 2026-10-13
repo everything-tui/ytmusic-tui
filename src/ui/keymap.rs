@@ -92,6 +92,7 @@ pub fn map_key(ctx: InputContext, key: KeyEvent) -> Option<Action> {
                 KeyCode::Char(' ') => Some(Action::EqToggle),
                 KeyCode::Char('0') => Some(Action::EqResetBand),
                 KeyCode::Char('r') | KeyCode::Char('R') => Some(Action::EqFlat),
+                KeyCode::Char('a') | KeyCode::Char('A') => Some(Action::EqAdaptiveCycle),
                 KeyCode::Char('1') => Some(Action::EqPreset(0)),
                 KeyCode::Char('2') => Some(Action::EqPreset(1)),
                 KeyCode::Char('3') => Some(Action::EqPreset(2)),
@@ -206,7 +207,7 @@ Playback
   M               Mute
   s               Shuffle
   r               Cycle repeat (off → all → one)
-  e               Equalizer (10-band; 1–5: Flat/Bass/Electronic/Vocal/Rock)
+  e               Equalizer (10-band; a = Adaptive taste; 1–5 presets)
   l               Like current track
 
 Navigation

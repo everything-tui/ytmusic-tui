@@ -249,6 +249,19 @@ async fn download_stream(
 
     let resp = req.send().await.context("download request")?;
     let status = resp.status();
+    // #region agent log
+    crate::debug_log::log(
+        if status.as_u16() == 403 { "A" } else { "D" },
+        "player/download.rs:download_stream",
+        "cdn response",
+        serde_json::json!({
+            "http_status": status.as_u16(),
+            "ok": status.is_success() || status.as_u16() == 206,
+            "url_host": url.split('/').nth(2).unwrap_or(""),
+            "header_keys": headers.keys().cloned().collect::<Vec<_>>(),
+        }),
+    );
+    // #endregion
     if !(status.is_success() || status.as_u16() == 206) {
         anyhow::bail!("download HTTP {status}");
     }

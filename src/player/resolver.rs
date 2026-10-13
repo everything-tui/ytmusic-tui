@@ -322,6 +322,20 @@ impl Resolver {
             let reason = playability
                 .and_then(|p| p.reason.as_deref())
                 .unwrap_or(status_str);
+            // #region agent log
+            crate::debug_log::log(
+                "B",
+                "player/resolver.rs:resolve_with_client",
+                "playability not OK",
+                serde_json::json!({
+                    "video_id": video_id,
+                    "client": client.name,
+                    "status": status_str,
+                    "reason": reason,
+                    "had_cookies": cookies.is_some(),
+                }),
+            );
+            // #endregion
             bail!("{status_str}: {reason}");
         }
 
@@ -330,13 +344,62 @@ impl Resolver {
             .as_ref()
             .context("player response missing streamingData")?;
 
-        let format = select_format(&streaming.adaptive_formats, &streaming.formats)
-            .context("no playable plaintext audio/mp4 (or itag 18) url")?;
+        let adaptive_n = streaming.adaptive_formats.len();
+        let formats_n = streaming.formats.len();
+        let adaptive_with_url = streaming
+            .adaptive_formats
+            .iter()
+            .filter(|f| f.url.as_ref().is_some_and(|u| u.starts_with("http")))
+            .count();
+        let formats_with_url = streaming
+            .formats
+            .iter()
+            .filter(|f| f.url.as_ref().is_some_and(|u| u.starts_with("http")))
+            .count();
+
+        let format = match select_format(&streaming.adaptive_formats, &streaming.formats) {
+            Some(f) => f,
+            None => {
+                // #region agent log
+                crate::debug_log::log(
+                    "C",
+                    "player/resolver.rs:resolve_with_client",
+                    "no plaintext format",
+                    serde_json::json!({
+                        "video_id": video_id,
+                        "client": client.name,
+                        "adaptive_n": adaptive_n,
+                        "formats_n": formats_n,
+                        "adaptive_with_url": adaptive_with_url,
+                        "formats_with_url": formats_with_url,
+                        "had_cookies": cookies.is_some(),
+                    }),
+                );
+                // #endregion
+                bail!("no playable plaintext audio/mp4 (or itag 18) url");
+            }
+        };
 
         let url = format.url.clone().context("selected format missing url")?;
         if !url.starts_with("http") {
             bail!("format url is not http(s): {url}");
         }
+        // #region agent log
+        crate::debug_log::log(
+            "C",
+            "player/resolver.rs:resolve_with_client",
+            "format selected",
+            serde_json::json!({
+                "video_id": video_id,
+                "client": client.name,
+                "itag": format.itag,
+                "mime": format.mime_type,
+                "adaptive_n": adaptive_n,
+                "formats_n": formats_n,
+                "had_cookies": cookies.is_some(),
+            }),
+        );
+        // #endregion
 
         let filesize = parse_u64_value(format.content_length.as_ref()).filter(|&n| n > 0);
         let duration =

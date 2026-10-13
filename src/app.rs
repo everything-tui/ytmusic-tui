@@ -150,6 +150,9 @@ pub struct App {
 
     pub toasts: Vec<Toast>,
     pub eq: crate::player::EqParams,
+    /// Taste-profile adaptive EQ (`Off` = manual presets/sliders).
+    pub eq_adaptive: crate::player::AdaptiveProfile,
+    pub adaptive_eq: crate::player::AdaptiveEq,
     pub visualizer: Visualizer,
     pub sample_scratch: Vec<f32>,
     pub title_marquee: crate::ui::marquee::Marquee,
@@ -239,6 +242,10 @@ impl App {
                 gains_db: config.playback.eq_gains,
             }
             .clamped(),
+            eq_adaptive: crate::player::AdaptiveProfile::from_config(
+                &config.playback.eq_adaptive,
+            ),
+            adaptive_eq: crate::player::AdaptiveEq::default(),
             paths,
             config,
             theme,
@@ -651,13 +658,13 @@ impl App {
                         let mut p = self.eq;
                         p.gains_db[selected] =
                             (p.gains_db[selected] + 1.0).min(crate::player::GAIN_MAX_DB);
-                        self.apply_eq(p);
+                        self.apply_eq_manual(p);
                     }
                     Action::MoveDown => {
                         let mut p = self.eq;
                         p.gains_db[selected] =
                             (p.gains_db[selected] - 1.0).max(crate::player::GAIN_MIN_DB);
-                        self.apply_eq(p);
+                        self.apply_eq_manual(p);
                     }
                     Action::EqToggle => {
                         let mut p = self.eq;
@@ -667,20 +674,23 @@ impl App {
                     Action::EqResetBand => {
                         let mut p = self.eq;
                         p.gains_db[selected] = 0.0;
-                        self.apply_eq(p);
+                        self.apply_eq_manual(p);
                     }
                     Action::EqFlat => {
                         let mut p = self.eq;
                         p.gains_db = [0.0; crate::player::BAND_COUNT];
-                        self.apply_eq(p);
+                        self.apply_eq_manual(p);
                     }
                     Action::EqPreset(i) => {
                         if let Some(preset) = crate::player::PRESETS.get(i) {
                             let mut p = self.eq;
                             p.enabled = true;
                             p.gains_db = preset.gains_db;
-                            self.apply_eq(p);
+                            self.apply_eq_manual(p);
                         }
+                    }
+                    Action::EqAdaptiveCycle => {
+                        self.cycle_eq_adaptive();
                     }
                     _ => {}
                 }
@@ -703,6 +713,9 @@ impl App {
             Action::Help => self.overlay = Overlay::Help { scroll: 0 },
             Action::OpenEqualizer => {
                 self.overlay = Overlay::Equalizer { selected: 0 };
+            }
+            Action::EqAdaptiveCycle => {
+                self.cycle_eq_adaptive();
             }
             Action::CommandPalette => {
                 self.overlay = Overlay::CommandPalette {
@@ -979,19 +992,6 @@ impl App {
             Action::LibrarySection(i) => {
                 // Sections live in the sidebar and stay clickable while a detail
                 // page is open — dismiss it so the library list is actually shown.
-                // #region agent log
-                crate::debug_log::log(
-                    "A",
-                    "app.rs:LibrarySection",
-                    "library section selected",
-                    serde_json::json!({
-                        "section": i,
-                        "signed_in": self.signed_in,
-                        "had_detail": self.detail.is_some(),
-                        "prev_tab": self.tab as usize,
-                    }),
-                );
-                // #endregion
                 self.tab = Tab::Library;
                 self.fullscreen_np = false;
                 self.detail = None;
@@ -1088,7 +1088,63 @@ impl App {
         self.eq = params.clamped();
         self.config.playback.eq_enabled = self.eq.enabled;
         self.config.playback.eq_gains = self.eq.gains_db;
+        self.config.playback.eq_adaptive = self.eq_adaptive.as_config().to_string();
         let _ = self.config.save(&self.paths);
+        let _ = self.player_cmd_tx.send(PlayerCommand::SetEq(self.eq));
+    }
+
+    /// Manual slider/preset edit — turns Adaptive off so modes don't fight.
+    fn apply_eq_manual(&mut self, params: crate::player::EqParams) {
+        if self.eq_adaptive != crate::player::AdaptiveProfile::Off {
+            self.eq_adaptive = crate::player::AdaptiveProfile::Off;
+            self.adaptive_eq.reset();
+            self.push_toast(Toast::info("Adaptive EQ off (manual edit)"));
+        }
+        self.apply_eq(params);
+    }
+
+    fn cycle_eq_adaptive(&mut self) {
+        self.eq_adaptive = self.eq_adaptive.next();
+        self.adaptive_eq.reset();
+        self.config.playback.eq_adaptive = self.eq_adaptive.as_config().to_string();
+        let _ = self.config.save(&self.paths);
+        if self.eq_adaptive == crate::player::AdaptiveProfile::Off {
+            // Leave current gains as-is when leaving adaptive.
+            self.push_toast(Toast::info("Adaptive EQ: Off"));
+        } else {
+            let mut p = self.eq;
+            p.enabled = true;
+            self.eq = p;
+            self.config.playback.eq_enabled = true;
+            let _ = self.config.save(&self.paths);
+            self.push_toast(Toast::info(format!(
+                "Adaptive EQ: {}",
+                self.eq_adaptive.title()
+            )));
+        }
+    }
+
+    /// Analyze current PCM and nudge EQ toward the active Adaptive profile.
+    pub fn tick_adaptive_eq(&mut self, samples: &[f32]) {
+        if self.eq_adaptive == crate::player::AdaptiveProfile::Off {
+            return;
+        }
+        if self.playback_state != PlaybackState::Playing {
+            return;
+        }
+        if !self.eq.enabled {
+            return;
+        }
+        let changed =
+            self.adaptive_eq
+                .update(samples, 44_100, self.eq_adaptive);
+        if !changed {
+            return;
+        }
+        let mut p = self.eq;
+        p.gains_db = self.adaptive_eq.gains_db;
+        // Apply live without writing config every 300ms (persist profile only).
+        self.eq = p.clamped();
         let _ = self.player_cmd_tx.send(PlayerCommand::SetEq(self.eq));
     }
 
@@ -1176,17 +1232,6 @@ impl App {
     }
 
     fn load_library_section(&mut self, cmds: &mut Vec<Command>) {
-        // #region agent log
-        crate::debug_log::log(
-            "E",
-            "app.rs:load_library_section",
-            "load_library_section entry",
-            serde_json::json!({
-                "signed_in": self.signed_in,
-                "section": self.library_section,
-            }),
-        );
-        // #endregion
         if !self.signed_in {
             return;
         }
@@ -1207,18 +1252,6 @@ impl App {
             4 => cmds.push(Command::LoadHistory),
             _ => {}
         }
-        // #region agent log
-        crate::debug_log::log(
-            "A",
-            "app.rs:load_library_section",
-            "pushed library load command",
-            serde_json::json!({
-                "section": self.library_section,
-                "cmd_count": cmds.len(),
-                "loading_library": self.loading_library,
-            }),
-        );
-        // #endregion
     }
 
     fn request_home(&mut self, cmds: &mut Vec<Command>) {
@@ -1642,20 +1675,6 @@ impl App {
                 self.fetch_detail_cover(&mut cmds);
             }
             AppEvent::LibraryPlaylists(p) => {
-                // #region agent log
-                crate::debug_log::log(
-                    "D",
-                    "app.rs:LibraryPlaylists",
-                    "received LibraryPlaylists event",
-                    serde_json::json!({
-                        "count": p.len(),
-                        "tab": self.tab as usize,
-                        "section": self.library_section,
-                        "detail_open": self.detail.is_some(),
-                        "titles": p.iter().take(5).map(|x| &x.title).collect::<Vec<_>>(),
-                    }),
-                );
-                // #endregion
                 self.loading_library = false;
                 self.library_fetched[1] = true;
                 self.library_playlists = p;
@@ -1801,6 +1820,14 @@ impl App {
                 let _ = self.player_cmd_tx.send(PlayerCommand::HandleEnded);
             }
             PlayerEvent::Error(e) => {
+                // #region agent log
+                crate::debug_log::log(
+                    "A",
+                    "app.rs:PlayerEvent::Error",
+                    "player error toast",
+                    serde_json::json!({ "error": e }),
+                );
+                // #endregion
                 // Only auto-skip on hard failures. Transient open/decode races are
                 // retried inside the engine; if we still get here, advance the queue.
                 self.push_toast(Toast::error(e));
@@ -2125,6 +2152,8 @@ pub async fn run_ui(
             if playing_now {
                 sample_provider(&mut app.sample_scratch);
                 app.visualizer.update(&app.sample_scratch, true);
+                let pcm = app.sample_scratch.clone();
+                app.tick_adaptive_eq(&pcm);
             } else {
                 app.visualizer.update(&[], false);
             }

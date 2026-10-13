@@ -207,29 +207,7 @@ impl InnertubeClient {
         let body = json!({ "browseId": "FEmusic_liked_playlists" });
         let json = self.post("browse", body).await?;
         self.require_signed_in(&json, "library playlists")?;
-        // #region agent log
-        let top_keys: Vec<_> = json
-            .as_object()
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default();
-        let json_len = json.to_string().len();
-        let logged_in = crate::auth::logged_in_from_response(&json);
-        // #endregion
-        let parsed = parse_library_playlists(&json);
-        // #region agent log
-        crate::debug_log::log(
-            "B",
-            "innertube.rs:library_playlists",
-            "browse FEmusic_liked_playlists response",
-            serde_json::json!({
-                "top_keys": top_keys,
-                "json_len": json_len,
-                "parsed_count": parsed.len(),
-                "logged_in": logged_in,
-            }),
-        );
-        // #endregion
-        Ok(parsed)
+        Ok(parse_library_playlists(&json))
     }
 
     pub async fn library_albums(&self) -> Result<Vec<Album>> {
@@ -550,52 +528,11 @@ fn parse_playlist(json: &Value, id: &str) -> Result<Playlist> {
 
 fn parse_library_playlists(json: &Value) -> Vec<Playlist> {
     let mut out = Vec::new();
-    // #region agent log
-    let mut two_row = 0u32;
-    let mut responsive = 0u32;
-    let mut two_row_ok = 0u32;
-    let mut responsive_ok = 0u32;
-    let mut sample_keys: Vec<String> = Vec::new();
-    // #endregion
     visit_contents(json, &mut |item| {
-        // #region agent log
-        if sample_keys.len() < 8 {
-            if let Some(obj) = item.as_object() {
-                sample_keys.extend(obj.keys().cloned());
-            }
-        }
-        if item.get("musicTwoRowItemRenderer").is_some() {
-            two_row += 1;
-            if parse_two_row_playlist(item).is_some() {
-                two_row_ok += 1;
-            }
-        }
-        if item.get("musicResponsiveListItemRenderer").is_some() {
-            responsive += 1;
-            if parse_responsive_playlist(item).is_some() {
-                responsive_ok += 1;
-            }
-        }
-        // #endregion
         if let Some(p) = parse_two_row_playlist(item).or_else(|| parse_responsive_playlist(item)) {
             out.push(p);
         }
     });
-    // #region agent log
-    crate::debug_log::log(
-        "B",
-        "innertube.rs:parse_library_playlists",
-        "parser visit stats",
-        serde_json::json!({
-            "out": out.len(),
-            "two_row": two_row,
-            "two_row_ok": two_row_ok,
-            "responsive": responsive,
-            "responsive_ok": responsive_ok,
-            "sample_keys": sample_keys,
-        }),
-    );
-    // #endregion
     out
 }
 

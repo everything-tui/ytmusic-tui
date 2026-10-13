@@ -39,6 +39,9 @@ pub struct PlaybackConfig {
     /// Accepts shorter arrays from older configs (padded with 0).
     #[serde(deserialize_with = "deserialize_eq_gains", default = "default_eq_gains")]
     pub eq_gains: [f32; 10],
+    /// Adaptive taste profile: "off" | "balanced" | "bass" | "vocal" | "bright".
+    #[serde(default = "default_eq_adaptive")]
+    pub eq_adaptive: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -80,12 +83,17 @@ impl Default for PlaybackConfig {
             prefetch: true,
             eq_enabled: true,
             eq_gains: default_eq_gains(),
+            eq_adaptive: default_eq_adaptive(),
         }
     }
 }
 
 fn default_eq_gains() -> [f32; 10] {
     [0.0; 10]
+}
+
+fn default_eq_adaptive() -> String {
+    "off".into()
 }
 
 fn deserialize_eq_gains<'de, D>(deserializer: D) -> Result<[f32; 10], D::Error>

@@ -1,5 +1,5 @@
 use crate::player::eq::{BAND_COUNT, BAND_FREQS_HZ, BAND_LABELS, GAIN_MAX_DB, PRESETS};
-use crate::player::EqParams;
+use crate::player::{AdaptiveProfile, EqParams};
 use crate::ui::components::{modal, truncate};
 use crate::ui::theme::Theme;
 use ratatui::prelude::*;
@@ -9,23 +9,30 @@ pub struct EqualizerOverlay<'a> {
     pub theme: &'a Theme,
     pub params: EqParams,
     pub selected: usize,
+    pub adaptive: AdaptiveProfile,
 }
 
 impl<'a> Widget for EqualizerOverlay<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let theme = self.theme;
-        // Wide enough for 10 slim columns + preset row.
         let width = (area.width.saturating_mul(85) / 100).clamp(56, 88);
         let height = (area.height.saturating_mul(70) / 100).clamp(16, 22);
         let status = if self.params.enabled { "on" } else { "off" };
-        let title = format!("equalizer ({status})");
+        let title = if self.adaptive == AdaptiveProfile::Off {
+            format!("equalizer ({status})")
+        } else {
+            format!(
+                "equalizer ({status} · adaptive · {})",
+                self.adaptive.label()
+            )
+        };
         let inner = modal(
             buf,
             area,
             width,
             height,
             &title,
-            "esc close · space toggle",
+            "esc close · space toggle · a adaptive",
             theme,
         );
         if inner.width < 24 || inner.height < 8 {
@@ -35,12 +42,13 @@ impl<'a> Widget for EqualizerOverlay<'a> {
         let bg = Style::default().bg(theme.bg_modal);
         let selected = self.selected.min(BAND_COUNT - 1);
 
-        // Preset row
+        // Preset + adaptive row
         let mut preset_x = inner.x;
         let preset_y = inner.y;
         for (i, p) in PRESETS.iter().enumerate() {
             let label = format!("[{}]{}", i + 1, p.name);
-            let active = self.params.gains_db == p.gains_db;
+            let active =
+                self.adaptive == AdaptiveProfile::Off && self.params.gains_db == p.gains_db;
             let style = if active {
                 theme.accent_bold().patch(bg)
             } else {
@@ -53,8 +61,17 @@ impl<'a> Widget for EqualizerOverlay<'a> {
             buf.set_string(preset_x, preset_y, &label, style);
             preset_x += w + 2;
         }
+        let adapt_label = format!("[a]{}", self.adaptive.title());
+        let adapt_style = if self.adaptive != AdaptiveProfile::Off {
+            theme.accent_bold().patch(bg)
+        } else {
+            theme.dim().patch(bg)
+        };
+        let w = adapt_label.width() as u16;
+        if preset_x + w < inner.x + inner.width {
+            buf.set_string(preset_x, preset_y, &adapt_label, adapt_style);
+        }
 
-        // Slider area
         let slider_top = inner.y + 2;
         let slider_bottom = inner.y + inner.height.saturating_sub(3);
         let slider_h = slider_bottom.saturating_sub(slider_top).max(1);
@@ -120,7 +137,6 @@ impl<'a> Widget for EqualizerOverlay<'a> {
                 style,
             );
             if label_y + 1 < inner.y + inner.height {
-                // Show dB; freq is already the column label.
                 let _ = BAND_FREQS_HZ[bi];
                 buf.set_stringn(
                     x,
@@ -133,7 +149,8 @@ impl<'a> Widget for EqualizerOverlay<'a> {
         }
 
         let hint_y = inner.y + inner.height.saturating_sub(1);
-        let hints = "←/→ band  ↑/↓ ±1dB  0 reset  r flat  1 Flat 2 Bass 3 Elec 4 Vocal 5 Rock";
+        let hints =
+            "←/→ band  ↑/↓ ±1dB  0 reset  r flat  a Adaptive  1–5 presets";
         buf.set_stringn(
             inner.x,
             hint_y,

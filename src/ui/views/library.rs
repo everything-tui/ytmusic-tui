@@ -38,14 +38,6 @@ pub fn render(
     hit: &mut HitMap,
 ) {
     if !data.signed_in {
-        // #region agent log
-        crate::debug_log::log(
-            "E",
-            "library.rs:render",
-            "library render not signed in",
-            serde_json::json!({ "section": data.section }),
-        );
-        // #endregion
         empty_state(
             buf,
             area,
@@ -65,25 +57,6 @@ pub fn render(
         3 => data.artists.len(),
         _ => data.history.len(),
     };
-    // #region agent log
-    if section == 1 {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static LAST: AtomicU64 = AtomicU64::new(0);
-        let key = ((data.loading as u64) << 32) | (count as u64);
-        if LAST.swap(key, Ordering::Relaxed) != key {
-            crate::debug_log::log(
-                "D",
-                "library.rs:render",
-                "playlists section render state",
-                serde_json::json!({
-                    "count": count,
-                    "loading": data.loading,
-                    "signed_in": data.signed_in,
-                }),
-            );
-        }
-    }
-    // #endregion
     let meta = if data.loading {
         String::new()
     } else if count == 1 {

@@ -161,6 +161,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 theme,
                 params: app.eq,
                 selected: *selected,
+                adaptive: app.eq_adaptive,
             }
             .render(area, buf);
         }
