@@ -16,12 +16,11 @@ Requires a recent Rust toolchain (`rustup`).
 
 ### Dependencies
 
-On first run, **yt-tui downloads what it needs**:
-
-- `yt-dlp` (stream extraction)
-- `deno` (JS runtime for yt-dlp), if `node` / `bun` / `deno` are not already on your `PATH`
+No external programs are required for playback — stream URLs are resolved natively via YouTube’s Innertube API (no `yt-dlp`, Node, Deno, or Bun).
 
 No YouTube API key. No manual cookie copying in the happy path.
+
+**Known limitations:** age-restricted and some region-locked tracks may not play (the stream client is unauthenticated). If YouTube changes mobile player clients, playback may need updated client constants in the resolver.
 
 ## Quick start
 
@@ -144,7 +143,7 @@ end
 
 ## Manual QA checklist
 
-- [ ] First run with no yt-dlp / deno on PATH — auto-download succeeds
+- [ ] Cold play works with no yt-dlp / node / deno installed
 - [ ] Guest mode: search + play
 - [ ] Browser login (Firefox and Chrome); Keychain prompt handled
 - [ ] Library + like after sign-in

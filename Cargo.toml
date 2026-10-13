@@ -54,9 +54,6 @@ base64 = "0.22"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 tempfile = "3"
-which = "7"
-flate2 = "1"
-zip = { version = "2", default-features = false, features = ["deflate"] }
 regex = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]

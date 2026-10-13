@@ -93,11 +93,6 @@ impl AuthService {
                 let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
             }
         }
-        // Also write netscape cookies for yt-dlp
-        if let Err(e) = manual::write_netscape_cookies(&session.cookies, &self.paths.cookies_tmp_file())
-        {
-            warn!("failed to write netscape cookies: {e}");
-        }
         self.session = Some(session);
         Ok(())
     }
@@ -110,18 +105,8 @@ impl AuthService {
         if path.exists() {
             fs::remove_file(&path)?;
         }
-        let cookies = self.paths.cookies_tmp_file();
-        if cookies.exists() {
-            let _ = fs::remove_file(cookies);
-        }
+        crate::paths::cleanup_legacy(&self.paths);
         self.session = None;
-        Ok(())
-    }
-
-    pub fn ensure_netscape_cookies(&self) -> Result<()> {
-        if let Some(s) = &self.session {
-            manual::write_netscape_cookies(&s.cookies, &self.paths.cookies_tmp_file())?;
-        }
         Ok(())
     }
 

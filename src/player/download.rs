@@ -203,6 +203,16 @@ async fn download_chunks(
     let mut start: u64 = 0;
     let mut total = filesize;
     let mut first = true;
+    // Throttle UI progress to whole-percent changes (≤ ~100 events per track).
+    let mut last_pct_reported: i32 = -1;
+
+    let report = |pct: f32, last: &mut i32| {
+        let whole = (pct * 100.0).floor() as i32;
+        if whole != *last {
+            *last = whole;
+            on_progress(pct.min(1.0));
+        }
+    };
 
     loop {
         if gf.is_stale_generation(generation) {
@@ -264,8 +274,9 @@ async fn download_chunks(
             }
             start += bytes.len() as u64;
             if let Some(t) = total {
-                on_progress((start as f32 / t as f32).min(1.0));
-            } else {
+                report((start as f32 / t as f32).min(1.0), &mut last_pct_reported);
+            } else if last_pct_reported < 0 {
+                last_pct_reported = 0;
                 on_progress(0.35);
             }
         }

@@ -148,7 +148,6 @@ pub struct App {
     media_meta_video_id: Option<String>,
 
     pub toasts: Vec<Toast>,
-    pub deps_status: String,
     pub visualizer: Visualizer,
     pub sample_scratch: Vec<f32>,
     pub title_marquee: crate::ui::marquee::Marquee,
@@ -200,8 +199,6 @@ pub enum PlayerCommand {
         repeat: RepeatMode,
     },
     Shutdown,
-    RefreshCookies,
-    SetDeps { ytdlp: std::path::PathBuf, js: Option<String> },
 }
 
 impl App {
@@ -280,7 +277,6 @@ impl App {
             detail: None,
             nav_stack: Vec::new(),
             toasts: Vec::new(),
-            deps_status: String::new(),
             sample_scratch: Vec::new(),
             should_quit: false,
             first_run,
@@ -1433,11 +1429,6 @@ impl App {
     fn apply_event(&mut self, ev: AppEvent) -> Vec<Command> {
         let mut cmds = Vec::new();
         match ev {
-            AppEvent::DepsReady { ytdlp, js_runtime } => {
-                self.deps_status = format!("yt-dlp {ytdlp} · {js_runtime}");
-            }
-            AppEvent::DepsStatus(s) => self.deps_status = s,
-            AppEvent::DepsError(e) => self.push_toast(Toast::error(e)),
             AppEvent::AuthState(AuthStateEvent::SignedIn(session)) => {
                 self.signed_in = true;
                 self.account_name = session.account_name.clone();
@@ -1447,7 +1438,6 @@ impl App {
                     "Signed in as {}",
                     session.account_name.as_deref().unwrap_or("user")
                 )));
-                let _ = self.player_cmd_tx.send(PlayerCommand::RefreshCookies);
                 cmds.push(Command::ApplyAuth(session));
                 // Refresh once for the personalized feed; ignore overlapping guest fetches.
                 self.request_home(&mut cmds);
@@ -1810,6 +1800,8 @@ fn handle_terminal_event(
             }
         }
         Event::Mouse(me) => match me.kind {
+            // Motion floods the event stream; ignore so we don't redraw every pixel.
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {}
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let up = matches!(me.kind, MouseEventKind::ScrollUp);
                 let in_player = app
@@ -1842,6 +1834,25 @@ fn handle_terminal_event(
         _ => {}
     }
     Ok(())
+}
+
+fn event_needs_redraw(ev: &Event) -> bool {
+    match ev {
+        Event::Mouse(me) => !matches!(
+            me.kind,
+            MouseEventKind::Moved | MouseEventKind::Drag(_)
+        ),
+        Event::FocusGained | Event::FocusLost => false,
+        _ => true,
+    }
+}
+
+fn app_event_needs_redraw(ev: &AppEvent) -> bool {
+    // Download progress is throttled upstream and currently unused by the UI.
+    !matches!(
+        ev,
+        AppEvent::Player(PlayerEvent::DownloadProgress { .. })
+    )
 }
 
 /// Suck up a burst of pasted characters (or a bracketed paste) without redrawing
@@ -1919,10 +1930,10 @@ pub async fn run_ui(
             let _ = cmd_tx.send(c);
         }
     }
-    let _ = cmd_tx.send(Command::EnsureDeps);
-
     // Draw once before first event
     terminal.draw(|f| crate::ui::draw(f, &app))?;
+    let mut dirty = false;
+    let mut last_draw = Instant::now();
 
     let result = loop {
         let playing = app.playback_state == PlaybackState::Playing;
@@ -1945,6 +1956,7 @@ pub async fn run_ui(
                     }
                     media.set_playing(app.position);
                 }
+                dirty = true;
             }
             _ = idle_tick.tick(), if !playing => {
                 for a in media.drain_actions() {
@@ -1957,10 +1969,12 @@ pub async fn run_ui(
                     media.set_metadata(t, None);
                     media.set_paused(app.position);
                 }
+                dirty = true;
             }
             maybe_ev = events.next() => {
                 match maybe_ev {
                     Some(Ok(ev)) => {
+                        let needs = event_needs_redraw(&ev);
                         let in_cookie = matches!(app.overlay, Overlay::ManualCookie { .. });
                         let looks_like_paste = match &ev {
                             Event::Paste(_) => true,
@@ -1982,6 +1996,9 @@ pub async fn run_ui(
                                 &mut terminal,
                             )
                             .await;
+                            dirty = true;
+                        } else if needs {
+                            dirty = true;
                         }
                     }
                     Some(Err(e)) => {
@@ -1993,12 +2010,23 @@ pub async fn run_ui(
             ev = event_rx.recv() => {
                 match ev {
                     Some(ev) => {
+                        let needs = app_event_needs_redraw(&ev);
                         let cmds = app.update(Action::ApplyEvent(ev));
                         for c in cmds { let _ = cmd_tx.send(c); }
+                        if needs {
+                            dirty = true;
+                        }
                     }
                     None => break Ok(()),
                 }
             }
+        }
+
+        if !dirty || last_draw.elapsed() < Duration::from_millis(16) {
+            if app.should_quit {
+                break Ok(());
+            }
+            continue;
         }
 
         // Feed the visualizer every frame path, not only on the playing tick.
@@ -2006,7 +2034,7 @@ pub async fn run_ui(
         // the mini bar and fullscreen NP stuck flat.
         let playing_now = app.playback_state == PlaybackState::Playing;
         if last_viz.elapsed() >= Duration::from_millis(33) {
-            last_viz = std::time::Instant::now();
+            last_viz = Instant::now();
             app.visualizer.set_band_count(48);
             if playing_now {
                 sample_provider(&mut app.sample_scratch);
@@ -2017,6 +2045,8 @@ pub async fn run_ui(
         }
 
         terminal.draw(|f| crate::ui::draw(f, &app))?;
+        last_draw = Instant::now();
+        dirty = false;
 
         if app.should_quit {
             break Ok(());

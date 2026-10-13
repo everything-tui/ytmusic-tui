@@ -1,7 +1,8 @@
+use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use std::fs;
 use std::path::PathBuf;
-use anyhow::{Context, Result};
+use tracing::info;
 
 #[derive(Clone)]
 pub struct Paths {
@@ -28,7 +29,6 @@ impl Paths {
             &self.config_dir,
             &self.data_dir,
             &self.cache_dir,
-            &self.bin_dir(),
             &self.audio_cache_dir(),
             &self.art_cache_dir(),
             &self.lyrics_cache_dir(),
@@ -51,10 +51,6 @@ impl Paths {
         self.data_dir.join("auth.json")
     }
 
-    pub fn bin_dir(&self) -> PathBuf {
-        self.data_dir.join("bin")
-    }
-
     pub fn audio_cache_dir(&self) -> PathBuf {
         self.cache_dir.join("audio")
     }
@@ -71,7 +67,32 @@ impl Paths {
         self.cache_dir.join("logs")
     }
 
-    pub fn cookies_tmp_file(&self) -> PathBuf {
+    /// Pre-native-resolver leftovers: managed yt-dlp/deno binaries and the
+    /// Netscape cookie jar written only for yt-dlp.
+    fn legacy_bin_dir(&self) -> PathBuf {
+        self.data_dir.join("bin")
+    }
+
+    fn legacy_cookies_file(&self) -> PathBuf {
         self.cache_dir.join("cookies.txt")
+    }
+}
+
+/// Delete leftover yt-dlp / deno binaries and the Netscape cookie jar from
+/// older installs. Safe to call repeatedly.
+pub fn cleanup_legacy(paths: &Paths) {
+    let bin = paths.legacy_bin_dir();
+    if bin.exists() {
+        match fs::remove_dir_all(&bin) {
+            Ok(()) => info!("removed legacy bin dir {}", bin.display()),
+            Err(e) => tracing::warn!("could not remove {}: {e}", bin.display()),
+        }
+    }
+    let cookies = paths.legacy_cookies_file();
+    if cookies.exists() {
+        match fs::remove_file(&cookies) {
+            Ok(()) => info!("removed legacy cookies {}", cookies.display()),
+            Err(e) => tracing::warn!("could not remove {}: {e}", cookies.display()),
+        }
     }
 }

@@ -147,7 +147,6 @@ pub enum Command {
     /// Main → API worker: install cookies + visitor / user-session ids.
     ApplyAuth(crate::auth::AuthSession),
     Logout,
-    EnsureDeps,
     UpdateMediaControls,
 }
 
@@ -183,10 +182,6 @@ impl SearchFilter {
 /// Events emitted by background services back to the UI.
 #[derive(Debug, Clone)]
 pub enum AppEvent {
-    DepsReady { ytdlp: String, js_runtime: String },
-    DepsStatus(String),
-    DepsError(String),
-
     AuthState(AuthStateEvent),
     Account(Option<crate::api::model::Account>),
 

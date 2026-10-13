@@ -37,7 +37,6 @@ pub struct Sidebar<'a> {
     pub library_section: Option<usize>,
     pub account: Option<&'a str>,
     pub signed_in: bool,
-    pub deps_status: &'a str,
     pub track: Option<&'a Track>,
     pub cover: CoverCtx<'a>,
     pub theme: &'a Theme,
@@ -154,11 +153,8 @@ impl<'a> Sidebar<'a> {
         }
         let nav_end = y;
 
-        // Footer: account, help hint, dependency status.
+        // Footer: account + help hint.
         let mut footer: Vec<(String, Style, Option<Action>)> = Vec::new();
-        if !self.deps_status.is_empty() {
-            footer.push((self.deps_status.to_string(), theme.muted(), None));
-        }
         footer.push(("? help · ^P commands".into(), theme.muted(), None));
         let (account, account_style) = match self.account {
             Some(n) => (format!("● {n}"), Style::default().fg(theme.success)),

@@ -1,0 +1,22 @@
+{
+  "playabilityStatus": { "status": "OK" },
+  "streamingData": {
+    "expiresInSeconds": "21540",
+    "adaptiveFormats": [
+      {
+        "itag": 140,
+        "signatureCipher": "s=ABC123&sp=sig&url=https%3A%2F%2Frr1---sn-example.googlevideo.com%2Fvideoplayback",
+        "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"",
+        "bitrate": 128000,
+        "contentLength": "3200000",
+        "approxDurationMs": "200000"
+      },
+      {
+        "itag": 251,
+        "cipher": "s=DEF456&sp=sig&url=https%3A%2F%2Frr1---sn-example.googlevideo.com%2Fvideoplayback",
+        "mimeType": "audio/webm; codecs=\"opus\"",
+        "bitrate": 160000
+      }
+    ]
+  }
+}

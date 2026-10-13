@@ -5,7 +5,7 @@ mod art;
 mod auth;
 mod config;
 mod debug_log;
-mod deps;
+mod doctor;
 mod lyrics;
 mod media_controls;
 mod paths;
@@ -56,11 +56,11 @@ fn main() -> Result<()> {
 
     let paths = Arc::new(Paths::new()?);
     setup_logging(&paths, cli.debug)?;
+    paths::cleanup_legacy(&paths);
 
     match cli.command {
         Some(Commands::Doctor) => {
-            let rt = tokio::runtime::Runtime::new()?;
-            let report = rt.block_on(deps::doctor_report(&paths));
+            let report = doctor::doctor_report(&paths);
             println!("{report}");
             return Ok(());
         }
@@ -143,7 +143,6 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
 
     let config = Config::load(&paths)?;
     let auth = AuthService::new(paths.clone());
-    let _ = auth.ensure_netscape_cookies();
     let signed_in = auth.is_signed_in();
     let account_name = auth.session().and_then(|s| s.account_name.clone());
     let cookies = auth.cookie_header().map(|s| s.to_string());
@@ -169,12 +168,8 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
     let viz_samples_ui = viz_samples.clone();
 
     let player_handle = tokio::spawn(async move {
-        let ytdlp = which::which("yt-dlp")
-            .unwrap_or_else(|_| paths_p.bin_dir().join("yt-dlp"));
         let mut player = PlayerService::new(
             paths_p.clone(),
-            ytdlp,
-            None,
             volume,
             autoplay,
             cache_mb,
@@ -247,8 +242,6 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
                     player.shutdown();
                     break;
                 }
-                PlayerCommand::RefreshCookies => player.refresh_cookies(),
-                PlayerCommand::SetDeps { ytdlp, js } => player.set_ytdlp(ytdlp, js),
             }
             // Sync queue in *play* order so UI cursor / JumpTo match what plays
             // (storage order + play-order cursor desynced under shuffle/radio).
@@ -271,28 +264,9 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
     let event_tx_c = event_tx.clone();
     let paths_c = paths.clone();
     let api_cmd_tx2 = api_cmd_tx.clone();
-    let player_cmd_tx2 = player_cmd_tx.clone();
     tokio::spawn(async move {
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
-                Command::EnsureDeps => {
-                    let paths = paths_c.clone();
-                    let tx = event_tx_c.clone();
-                    let player_tx = player_cmd_tx2.clone();
-                    tokio::spawn(async move {
-                        match deps::ensure_deps(paths, tx.clone()).await {
-                            Ok(d) => {
-                                let _ = player_tx.send(PlayerCommand::SetDeps {
-                                    ytdlp: d.ytdlp,
-                                    js: d.js_runtime,
-                                });
-                            }
-                            Err(e) => {
-                                let _ = tx.send(AppEvent::DepsError(e.to_string()));
-                            }
-                        }
-                    });
-                }
                 Command::BeginBrowserLogin => {
                     let paths = paths_c.clone();
                     let tx = event_tx_c.clone();
@@ -305,7 +279,6 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
                     let paths = paths_c.clone();
                     let tx = event_tx_c.clone();
                     let api = api_cmd_tx2.clone();
-                    let player_tx = player_cmd_tx2.clone();
                     tokio::spawn(async move {
                         match auth::validate_and_save_with_visitor(
                             paths,
@@ -318,7 +291,6 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
                         {
                             Ok(session) => {
                                 let _ = api.send(Command::ApplyAuth(session.clone()));
-                                let _ = player_tx.send(PlayerCommand::RefreshCookies);
                                 let _ = tx.send(AppEvent::AuthState(AuthStateEvent::SignedIn(
                                     session,
                                 )));
@@ -374,12 +346,10 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
         let paths_v = paths.clone();
         let tx_v = event_tx.clone();
         let api_v = api_cmd_tx.clone();
-        let player_v = player_cmd_tx.clone();
         tokio::spawn(async move {
             match auth::validate_and_save(paths_v.clone(), cookie, None, None).await {
                 Ok(session) => {
                     let _ = api_v.send(Command::ApplyAuth(session.clone()));
-                    let _ = player_v.send(PlayerCommand::RefreshCookies);
                     if let Some(name) = session.account_name.clone() {
                         let _ = tx_v.send(AppEvent::Account(Some(crate::api::model::Account {
                             name,
@@ -404,7 +374,6 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
                             {
                                 Ok(session) => {
                                     let _ = api_v.send(Command::ApplyAuth(session.clone()));
-                                    let _ = player_v.send(PlayerCommand::RefreshCookies);
                                     let _ = tx_v.send(AppEvent::AuthState(
                                         AuthStateEvent::SignedIn(session),
                                     ));

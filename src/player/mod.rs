@@ -14,7 +14,6 @@ use crate::player::engine::{EngineCmd, EngineHandle};
 use crate::player::queue::{PreviousResult, Queue, RepeatMode};
 use crate::player::resolver::Resolver;
 use crate::player::source::GrowingFile;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,8 +52,6 @@ pub struct PlayerService {
 impl PlayerService {
     pub fn new(
         paths: Arc<Paths>,
-        ytdlp: PathBuf,
-        js_runtime: Option<String>,
         volume: f32,
         autoplay: bool,
         cache_mb: u64,
@@ -72,8 +69,7 @@ impl PlayerService {
             }
         });
 
-        let cookies = resolver::cookies_path_if_exists(&paths.cookies_tmp_file());
-        let resolver = Resolver::new(ytdlp, js_runtime, cookies);
+        let resolver = Resolver::new();
         let downloader = Downloader::new(paths.audio_cache_dir(), cache_mb);
 
         Self {
@@ -93,16 +89,6 @@ impl PlayerService {
             current: None,
             play_epoch: Arc::new(AtomicU64::new(0)),
         }
-    }
-
-    pub fn set_ytdlp(&mut self, path: PathBuf, js: Option<String>) {
-        self.resolver.set_ytdlp(path);
-        self.resolver.set_js_runtime(js);
-    }
-
-    pub fn refresh_cookies(&mut self) {
-        self.resolver
-            .set_cookies(resolver::cookies_path_if_exists(&self.paths.cookies_tmp_file()));
     }
 
     pub fn take_samples(&self, out: &mut Vec<f32>) {
@@ -159,7 +145,7 @@ impl PlayerService {
             let video_id = track.video_id.clone();
             let title = track.title.clone();
 
-            // Cached files skip yt-dlp entirely (~5s cold-start win on replays).
+            // Cached files skip stream resolution entirely (~5s cold-start win on replays).
             let need_resolve = !downloader.is_cached(&video_id);
             let file = if !need_resolve {
                 match GrowingFile::open_complete(&downloader.cached_path(&video_id)) {
@@ -395,26 +381,61 @@ async fn resolve_download(
     if !alive() {
         return None;
     }
-    let tx = event_tx.clone();
-    let vid = video_id.to_string();
-    match downloader
-        .get(video_id, &stream, move |pct| {
-            let _ = tx.send(AppEvent::Player(PlayerEvent::DownloadProgress {
-                video_id: vid.clone(),
-                pct,
-            }));
-        })
-        .await
-    {
+
+    async fn download_once(
+        video_id: &str,
+        stream: &crate::player::resolver::ResolvedStream,
+        downloader: &Downloader,
+        event_tx: &mpsc::UnboundedSender<AppEvent>,
+    ) -> anyhow::Result<std::sync::Arc<GrowingFile>> {
+        let tx = event_tx.clone();
+        let vid = video_id.to_string();
+        downloader
+            .get(video_id, stream, move |pct| {
+                let _ = tx.send(AppEvent::Player(PlayerEvent::DownloadProgress {
+                    video_id: vid.clone(),
+                    pct,
+                }));
+            })
+            .await
+    }
+
+    match download_once(video_id, &stream, downloader, event_tx).await {
         Ok(f) => Some(f),
         Err(e) => {
-            if alive() {
-                warn!("download failed: {e}");
-                let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
-                    "Couldn't play {title} — skipping"
-                ))));
+            if !alive() {
+                return None;
             }
-            None
+            // Expired / 403'd CDN URLs: invalidate, re-resolve once, retry download.
+            warn!("download failed for {title}: {e}; re-resolving…");
+            resolver.invalidate(video_id).await;
+            let stream2 = match resolver.resolve(video_id).await {
+                Ok(s) => s,
+                Err(e2) => {
+                    if alive() {
+                        warn!("re-resolve after download failure: {e2}");
+                        let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
+                            "Couldn't play {title} — skipping"
+                        ))));
+                    }
+                    return None;
+                }
+            };
+            if !alive() {
+                return None;
+            }
+            match download_once(video_id, &stream2, downloader, event_tx).await {
+                Ok(f) => Some(f),
+                Err(e2) => {
+                    if alive() {
+                        warn!("download retry failed: {e2}");
+                        let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
+                            "Couldn't play {title} — skipping"
+                        ))));
+                    }
+                    None
+                }
+            }
         }
     }
 }
