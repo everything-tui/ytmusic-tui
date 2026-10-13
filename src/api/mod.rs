@@ -235,6 +235,9 @@ impl ApiService {
             Command::ApplyAuth(session) => {
                 self.client.apply_session(&session);
             }
+            Command::ClearAuth => {
+                self.apply_session(None);
+            }
             _ => {}
         }
     }
@@ -257,7 +260,7 @@ pub fn spawn_api_worker(
         // open is not stuck behind a large library or home fetch.
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
-                Command::ApplyAuth(_) | Command::ValidateCookies { .. } => {
+                Command::ApplyAuth(_) | Command::ClearAuth | Command::ValidateCookies { .. } => {
                     let mut svc = api.branch();
                     svc.handle(cmd).await;
                 }

@@ -1,10 +1,12 @@
 pub mod download;
 pub mod engine;
+pub mod eq;
 pub mod queue;
 pub mod resolver;
 pub mod source;
 
 pub use engine::SampleBuffer;
+pub use eq::{EqHandle, EqParams, BAND_COUNT, BAND_LABELS, GAIN_MAX_DB, GAIN_MIN_DB, PRESETS};
 
 use crate::action::{AppEvent, PlayerEvent};
 use crate::api::model::Track;
@@ -55,11 +57,13 @@ impl PlayerService {
         volume: f32,
         autoplay: bool,
         cache_mb: u64,
+        eq: EqParams,
         event_tx: mpsc::UnboundedSender<AppEvent>,
         viz_samples: SampleBuffer,
     ) -> Self {
         let (engine_tx, engine_rx) = crossbeam_channel::unbounded::<PlayerEvent>();
-        let engine = EngineHandle::spawn_with_samples(engine_tx, viz_samples);
+        let eq_handle = EqHandle::new(eq);
+        let engine = EngineHandle::spawn_with_samples(engine_tx, viz_samples, eq_handle);
 
         // Forward engine events to app
         let app_tx = event_tx.clone();
@@ -89,6 +93,19 @@ impl PlayerService {
             current: None,
             play_epoch: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    pub fn set_eq(&mut self, params: EqParams) {
+        self.engine.eq.set(params);
+        self.engine.send(EngineCmd::SetEq(params));
+    }
+
+    pub async fn set_cookies(&self, cookies: Option<String>) {
+        self.resolver.set_cookies(cookies).await;
+    }
+
+    pub fn eq_params(&self) -> EqParams {
+        self.engine.eq.get()
     }
 
     pub fn take_samples(&self, out: &mut Vec<f32>) {
@@ -355,32 +372,6 @@ async fn resolve_download(
     event_tx: &mpsc::UnboundedSender<AppEvent>,
 ) -> Option<std::sync::Arc<GrowingFile>> {
     let alive = || play_epoch.load(Ordering::SeqCst) == epoch;
-    let stream = match resolver.resolve(video_id).await {
-        Ok(s) => s,
-        Err(e) => {
-            if !alive() {
-                return None;
-            }
-            warn!("resolve failed for {title}: {e}, retrying…");
-            resolver.invalidate(video_id).await;
-            match resolver.resolve(video_id).await {
-                Ok(s) => s,
-                Err(e2) => {
-                    if !alive() {
-                        return None;
-                    }
-                    warn!("resolve retry failed: {e2}");
-                    let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
-                        "Couldn't play {title} — skipping"
-                    ))));
-                    return None;
-                }
-            }
-        }
-    };
-    if !alive() {
-        return None;
-    }
 
     async fn download_once(
         video_id: &str,
@@ -400,44 +391,66 @@ async fn resolve_download(
             .await
     }
 
-    match download_once(video_id, &stream, downloader, event_tx).await {
-        Ok(f) => Some(f),
-        Err(e) => {
-            if !alive() {
+    // Up to one failover: if the CDN 403s, skip that player client and try the next.
+    for attempt in 0..2 {
+        if !alive() {
+            return None;
+        }
+        let stream = match resolver.resolve(video_id).await {
+            Ok(s) => s,
+            Err(e) => {
+                if attempt == 0 {
+                    warn!("resolve failed for {title}: {e}, retrying…");
+                    resolver.invalidate(video_id).await;
+                    continue;
+                }
+                if alive() {
+                    warn!("resolve failed: {e}");
+                    let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
+                        "Couldn't play {title} — skipping"
+                    ))));
+                }
                 return None;
             }
-            // Expired / 403'd CDN URLs: invalidate, re-resolve once, retry download.
-            warn!("download failed for {title}: {e}; re-resolving…");
-            resolver.invalidate(video_id).await;
-            let stream2 = match resolver.resolve(video_id).await {
-                Ok(s) => s,
-                Err(e2) => {
-                    if alive() {
-                        warn!("re-resolve after download failure: {e2}");
-                        let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
-                            "Couldn't play {title} — skipping"
-                        ))));
-                    }
+        };
+        let client_name = stream.client_name.clone();
+        if !alive() {
+            return None;
+        }
+
+        match download_once(video_id, &stream, downloader, event_tx).await {
+            Ok(f) => {
+                resolver.clear_client_skips(video_id).await;
+                return Some(f);
+            }
+            Err(e) => {
+                if !alive() {
                     return None;
                 }
-            };
-            if !alive() {
-                return None;
-            }
-            match download_once(video_id, &stream2, downloader, event_tx).await {
-                Ok(f) => Some(f),
-                Err(e2) => {
-                    if alive() {
-                        warn!("download retry failed: {e2}");
-                        let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
-                            "Couldn't play {title} — skipping"
-                        ))));
+                warn!(
+                    "download failed for {title} via {client_name}: {e}; {}",
+                    if attempt == 0 {
+                        "skipping client and re-resolving…"
+                    } else {
+                        "giving up"
                     }
-                    None
+                );
+                if attempt == 0 {
+                    resolver
+                        .invalidate_skipping_client(video_id, &client_name)
+                        .await;
+                    continue;
                 }
+                if alive() {
+                    let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
+                        "Couldn't play {title} — skipping"
+                    ))));
+                }
+                return None;
             }
         }
     }
+    None
 }
 
 fn prefetch_track(track: Track, resolver: Resolver, downloader: Downloader) {

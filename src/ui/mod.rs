@@ -12,6 +12,7 @@ use crate::ui::components::{fill, modal, pad, pill, row, truncate};
 use crate::ui::cover::CoverCtx;
 use crate::ui::theme::Theme;
 use crate::ui::views::detail::DetailKind;
+use crate::ui::widgets::equalizer::EqualizerOverlay;
 use crate::ui::widgets::help::HelpOverlay;
 use crate::ui::widgets::now_playing::{preferred_height, NowPlayingBar};
 use crate::ui::widgets::sidebar::{self, Sidebar};
@@ -155,6 +156,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         Overlay::ManualCookie { input } => draw_manual_cookie(area, buf, theme, input),
         Overlay::AccountMenu => draw_account_menu(area, buf, theme, app),
+        Overlay::Equalizer { selected } => {
+            EqualizerOverlay {
+                theme,
+                params: app.eq,
+                selected: *selected,
+            }
+            .render(area, buf);
+        }
         Overlay::None | Overlay::Onboarding => {}
     }
 
@@ -658,6 +667,7 @@ mod tests {
             Overlay::AccountMenu,
             Overlay::CommandPalette { query: "pl".into(), selected: 0 },
             Overlay::ManualCookie { input: "Cookie: a=b".into() },
+            Overlay::Equalizer { selected: 0 },
         ] {
             app.overlay = overlay;
             let out = render(&app, 120, 36);

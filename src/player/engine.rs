@@ -1,5 +1,6 @@
 use crate::action::PlayerEvent;
 use crate::api::model::Track;
+use crate::player::eq::{EqHandle, EqParams, EqSource};
 use crate::player::source::{open_decoder_resilient, GrowingFile};
 use crossbeam_channel::{Receiver, Sender};
 use rodio::{OutputStream, Sink, Source};
@@ -19,6 +20,7 @@ pub enum EngineCmd {
     Toggle,
     Seek(Duration),
     SetVolume(f32),
+    SetEq(EqParams),
     Stop,
     Shutdown,
 }
@@ -66,29 +68,35 @@ impl SampleBuffer {
 pub struct EngineHandle {
     pub cmd_tx: Sender<EngineCmd>,
     pub samples: SampleBuffer,
+    pub eq: EqHandle,
 }
 
 impl EngineHandle {
     pub fn spawn(event_tx: Sender<PlayerEvent>) -> Self {
-        Self::spawn_with_samples(event_tx, SampleBuffer::default())
+        Self::spawn_with_samples(event_tx, SampleBuffer::default(), EqHandle::default())
     }
 
     /// Share `samples` with the UI so the visualizer can read PCM without
     /// waiting on player-command handling.
-    pub fn spawn_with_samples(event_tx: Sender<PlayerEvent>, samples: SampleBuffer) -> Self {
+    pub fn spawn_with_samples(
+        event_tx: Sender<PlayerEvent>,
+        samples: SampleBuffer,
+        eq: EqHandle,
+    ) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
         let samples_thread = samples.clone();
+        let eq_thread = eq.clone();
 
         std::thread::Builder::new()
             .name("yt-tui-audio".into())
             .spawn(move || {
-                if let Err(e) = run_engine(cmd_rx, event_tx, samples_thread) {
+                if let Err(e) = run_engine(cmd_rx, event_tx, samples_thread, eq_thread) {
                     error!("audio engine exited: {e}");
                 }
             })
             .expect("spawn audio thread");
 
-        Self { cmd_tx, samples }
+        Self { cmd_tx, samples, eq }
     }
 
     pub fn send(&self, cmd: EngineCmd) {
@@ -104,12 +112,14 @@ fn run_engine(
     cmd_rx: Receiver<EngineCmd>,
     event_tx: Sender<PlayerEvent>,
     samples: SampleBuffer,
+    eq: EqHandle,
 ) -> anyhow::Result<()> {
     let (_stream, handle) = OutputStream::try_default()?;
     let sink = Sink::try_new(&handle)?;
     sink.pause();
 
     let mut current_track: Option<Track> = None;
+    let mut current_file: Option<Arc<GrowingFile>> = None;
     let sink_pos = Arc::new(Mutex::new(Duration::ZERO));
     let playing = Arc::new(Mutex::new(false));
 
@@ -137,13 +147,15 @@ fn run_engine(
             }) => {
                 sink.stop();
                 sink.clear();
+                current_file = Some(file.clone());
                 let _ = event_tx.send(PlayerEvent::Loading {
                     track: track.clone(),
                 });
                 match open_decoder_resilient(file.clone()) {
                     Ok(source) => {
                         let decoded_dur = source.total_duration();
-                        let tapped = DirectTap::new(source, samples.clone());
+                        let eqd = EqSource::new(source, eq.clone());
+                        let tapped = DirectTap::new(eqd, samples.clone());
                         sink.append(tapped);
                         sink.set_volume(volume * volume);
                         if start > Duration::ZERO {
@@ -180,7 +192,8 @@ fn run_engine(
                         match retry {
                             Ok(source) => {
                                 let decoded_dur = source.total_duration();
-                                let tapped = DirectTap::new(source, samples.clone());
+                                let eqd = EqSource::new(source, eq.clone());
+                                let tapped = DirectTap::new(eqd, samples.clone());
                                 sink.append(tapped);
                                 sink.set_volume(volume * volume);
                                 if start > Duration::ZERO {
@@ -202,6 +215,8 @@ fn run_engine(
                             }
                             Err(e) => {
                                 *playing.lock().unwrap() = false;
+                                current_track = None;
+                                current_file = None;
                                 let _ = event_tx.send(PlayerEvent::Error(format!(
                                     "Couldn't play {}: {e}",
                                     track.title
@@ -243,11 +258,15 @@ fn run_engine(
                 sink.set_volume(v * v);
                 let _ = event_tx.send(PlayerEvent::Volume(v));
             }
+            Ok(EngineCmd::SetEq(params)) => {
+                eq.set(params);
+            }
             Ok(EngineCmd::Stop) => {
                 sink.stop();
                 sink.clear();
                 *playing.lock().unwrap() = false;
                 current_track = None;
+                current_file = None;
                 let _ = event_tx.send(PlayerEvent::Stopped);
             }
             Ok(EngineCmd::Shutdown) => {
@@ -265,8 +284,25 @@ fn run_engine(
             last_empty_check = std::time::Instant::now();
             if *playing.lock().unwrap() && sink.empty() && current_track.is_some() {
                 *playing.lock().unwrap() = false;
+                let title = current_track
+                    .as_ref()
+                    .map(|t| t.title.clone())
+                    .unwrap_or_default();
                 current_track = None;
-                let _ = event_tx.send(PlayerEvent::Ended);
+                // Mid-download CDN/auth failure used to look like a clean end →
+                // playlist auto-advanced after ~few seconds of audio.
+                let failed = current_file
+                    .as_ref()
+                    .map(|f| f.is_failed())
+                    .unwrap_or(false);
+                current_file = None;
+                if failed {
+                    let _ = event_tx.send(PlayerEvent::Error(format!(
+                        "Audio stream ended early for {title}"
+                    )));
+                } else {
+                    let _ = event_tx.send(PlayerEvent::Ended);
+                }
             }
         }
     }

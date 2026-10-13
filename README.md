@@ -63,6 +63,7 @@ yt-tui --debug   # verbose file logging
 | `/` | Search |
 | `1`–`5` | Home / Search / Library / Queue / Lyrics |
 | `Tab` / `f` | Full-screen Now Playing |
+| `e` | Equalizer |
 | `L` | Account / sign in |
 | `Ctrl+P` | Command palette |
 | `?` | Help |
@@ -96,7 +97,11 @@ autoplay = true
 volume = 0.8
 cache_size_mb = 1024
 prefetch = true
+eq_enabled = true
+eq_gains = [0.0, 0.0, 0.0, 0.0, 0.0]  # Bass … Treble, ±12 dB
 ```
+
+Press **`e`** for the equalizer (presets include Bass Boost).
 
 Logs: `…/Caches/…/logs/yt-tui.log` (never written to the terminal).
 

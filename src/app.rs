@@ -57,6 +57,7 @@ pub enum Overlay {
     CommandPalette { query: String, selected: usize },
     ManualCookie { input: String },
     AccountMenu,
+    Equalizer { selected: usize },
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +149,7 @@ pub struct App {
     media_meta_video_id: Option<String>,
 
     pub toasts: Vec<Toast>,
+    pub eq: crate::player::EqParams,
     pub visualizer: Visualizer,
     pub sample_scratch: Vec<f32>,
     pub title_marquee: crate::ui::marquee::Marquee,
@@ -199,6 +201,9 @@ pub enum PlayerCommand {
         repeat: RepeatMode,
     },
     Shutdown,
+    SetEq(crate::player::EqParams),
+    /// Sync Music session cookies into the stream resolver (yt-dlp auth path).
+    SetCookies(Option<String>),
 }
 
 impl App {
@@ -229,6 +234,11 @@ impl App {
             radio_requested_for: None,
             volume: config.playback.volume,
             autoplay: config.playback.autoplay,
+            eq: crate::player::EqParams {
+                enabled: config.playback.eq_enabled,
+                gains_db: config.playback.eq_gains,
+            }
+            .clamped(),
             paths,
             config,
             theme,
@@ -360,7 +370,9 @@ impl App {
             Overlay::ConfirmQuit => InputContext::ConfirmQuit,
             Overlay::CommandPalette { .. } => InputContext::CommandPalette,
             Overlay::ManualCookie { .. } => InputContext::ManualCookie,
-            Overlay::ContextMenu { .. } | Overlay::AccountMenu => InputContext::Global,
+            Overlay::Equalizer { .. } => InputContext::Equalizer,
+            Overlay::ContextMenu { .. } => InputContext::Global,
+            Overlay::AccountMenu => InputContext::AccountMenu,
             Overlay::None => {
                 if self.tab == Tab::Search && self.detail.is_none() && self.search_editing {
                     InputContext::Search
@@ -385,7 +397,9 @@ impl App {
             ("Lyrics", "lyrics"),
             ("Now Playing", "np"),
             ("Sign in", "login"),
+            ("Log out", "logout"),
             ("Help", "help"),
+            ("Equalizer", "equalizer"),
             ("Quit", "quit"),
         ];
         let q = match &self.overlay {
@@ -599,27 +613,78 @@ impl App {
             Overlay::AccountMenu => {
                 match action {
                     Action::CloseOverlay | Action::Escape => self.overlay = Overlay::None,
-                    Action::BeginLogin | Action::Select => {
+                    Action::BeginLogin | Action::Select if !self.signed_in => {
                         self.overlay = Overlay::None;
                         cmds.push(Command::BeginBrowserLogin);
                     }
-                    Action::Logout | Action::LikeCurrent => {
-                        // L while in account menu = logout if signed in
-                        if self.signed_in {
-                            cmds.push(Command::Logout);
-                            self.signed_in = false;
-                            self.account_name = None;
-                            self.overlay = Overlay::None;
-                            self.push_toast(Toast::info("Signed out"));
-                        }
+                    Action::Logout | Action::Select if self.signed_in => {
+                        cmds.push(Command::Logout);
+                        self.signed_in = false;
+                        self.account_name = None;
+                        self.overlay = Overlay::None;
+                        self.push_toast(Toast::info("Signed out"));
                     }
-                    Action::BeginManualCookie => {
+                    Action::BeginManualCookie if !self.signed_in => {
                         self.overlay = Overlay::ManualCookie {
                             input: String::new(),
                         };
                     }
                     _ => {}
                 }
+                return cmds;
+            }
+            Overlay::Equalizer { selected } => {
+                let mut selected = *selected;
+                let n = crate::player::BAND_COUNT;
+                match action {
+                    Action::CloseOverlay | Action::Escape => {
+                        self.overlay = Overlay::None;
+                        return cmds;
+                    }
+                    Action::MoveLeft => {
+                        selected = selected.saturating_sub(1);
+                    }
+                    Action::MoveRight => {
+                        selected = (selected + 1).min(n - 1);
+                    }
+                    Action::MoveUp => {
+                        let mut p = self.eq;
+                        p.gains_db[selected] =
+                            (p.gains_db[selected] + 1.0).min(crate::player::GAIN_MAX_DB);
+                        self.apply_eq(p);
+                    }
+                    Action::MoveDown => {
+                        let mut p = self.eq;
+                        p.gains_db[selected] =
+                            (p.gains_db[selected] - 1.0).max(crate::player::GAIN_MIN_DB);
+                        self.apply_eq(p);
+                    }
+                    Action::EqToggle => {
+                        let mut p = self.eq;
+                        p.enabled = !p.enabled;
+                        self.apply_eq(p);
+                    }
+                    Action::EqResetBand => {
+                        let mut p = self.eq;
+                        p.gains_db[selected] = 0.0;
+                        self.apply_eq(p);
+                    }
+                    Action::EqFlat => {
+                        let mut p = self.eq;
+                        p.gains_db = [0.0; crate::player::BAND_COUNT];
+                        self.apply_eq(p);
+                    }
+                    Action::EqPreset(i) => {
+                        if let Some(preset) = crate::player::PRESETS.get(i) {
+                            let mut p = self.eq;
+                            p.enabled = true;
+                            p.gains_db = preset.gains_db;
+                            self.apply_eq(p);
+                        }
+                    }
+                    _ => {}
+                }
+                self.overlay = Overlay::Equalizer { selected };
                 return cmds;
             }
             Overlay::None => {}
@@ -636,6 +701,9 @@ impl App {
                 }
             }
             Action::Help => self.overlay = Overlay::Help { scroll: 0 },
+            Action::OpenEqualizer => {
+                self.overlay = Overlay::Equalizer { selected: 0 };
+            }
             Action::CommandPalette => {
                 self.overlay = Overlay::CommandPalette {
                     query: String::new(),
@@ -1000,11 +1068,28 @@ impl App {
             "lyrics" => self.tab = Tab::Lyrics,
             "np" => self.fullscreen_np = true,
             "login" => cmds.push(Command::BeginBrowserLogin),
+            "logout" => {
+                if self.signed_in {
+                    cmds.push(Command::Logout);
+                    self.signed_in = false;
+                    self.account_name = None;
+                    self.push_toast(Toast::info("Signed out"));
+                }
+            }
             "help" => self.overlay = Overlay::Help { scroll: 0 },
+            "equalizer" => self.overlay = Overlay::Equalizer { selected: 0 },
             "quit" => self.should_quit = true,
             _ => {}
         }
         cmds
+    }
+
+    fn apply_eq(&mut self, params: crate::player::EqParams) {
+        self.eq = params.clamped();
+        self.config.playback.eq_enabled = self.eq.enabled;
+        self.config.playback.eq_gains = self.eq.gains_db;
+        let _ = self.config.save(&self.paths);
+        let _ = self.player_cmd_tx.send(PlayerCommand::SetEq(self.eq));
     }
 
     fn run_context_action(&mut self, label: &str) -> Vec<Command> {
@@ -1465,6 +1550,7 @@ impl App {
                 self.library_albums.clear();
                 self.library_artists.clear();
                 self.history.clear();
+                cmds.push(Command::ClearAuth);
             }
             AppEvent::AuthState(AuthStateEvent::SessionExpired(msg)) => {
                 self.signed_in = false;

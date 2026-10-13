@@ -12,6 +12,8 @@ pub enum InputContext {
     Help,
     ConfirmQuit,
     List,
+    Equalizer,
+    AccountMenu,
 }
 
 pub fn map_key(ctx: InputContext, key: KeyEvent) -> Option<Action> {
@@ -78,6 +80,35 @@ pub fn map_key(ctx: InputContext, key: KeyEvent) -> Option<Action> {
                 _ => None,
             };
         }
+        InputContext::Equalizer => {
+            return match key.code {
+                KeyCode::Esc | KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Char('q') => {
+                    Some(Action::CloseOverlay)
+                }
+                KeyCode::Left | KeyCode::Char('h') => Some(Action::MoveLeft),
+                KeyCode::Right | KeyCode::Char('l') => Some(Action::MoveRight),
+                KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveUp),
+                KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveDown),
+                KeyCode::Char(' ') => Some(Action::EqToggle),
+                KeyCode::Char('0') => Some(Action::EqResetBand),
+                KeyCode::Char('r') | KeyCode::Char('R') => Some(Action::EqFlat),
+                KeyCode::Char('1') => Some(Action::EqPreset(0)),
+                KeyCode::Char('2') => Some(Action::EqPreset(1)),
+                KeyCode::Char('3') => Some(Action::EqPreset(2)),
+                KeyCode::Char('4') => Some(Action::EqPreset(3)),
+                KeyCode::Char('5') => Some(Action::EqPreset(4)),
+                _ => None,
+            };
+        }
+        InputContext::AccountMenu => {
+            return match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => Some(Action::CloseOverlay),
+                KeyCode::Enter => Some(Action::Select),
+                KeyCode::Char('L') | KeyCode::Char('l') => Some(Action::Logout),
+                KeyCode::Char('P') | KeyCode::Char('p') => Some(Action::BeginManualCookie),
+                _ => None,
+            };
+        }
         InputContext::Global | InputContext::List => {}
     }
 
@@ -139,6 +170,7 @@ pub fn map_key(ctx: InputContext, key: KeyEvent) -> Option<Action> {
         KeyCode::Char('J') => Some(Action::MoveQueueDown),
         KeyCode::Char('K') => Some(Action::MoveQueueUp),
         KeyCode::Char('f') => Some(Action::ToggleNowPlaying),
+        KeyCode::Char('e') => Some(Action::OpenEqualizer),
         _ => None,
     }
 }
@@ -174,6 +206,7 @@ Playback
   M               Mute
   s               Shuffle
   r               Cycle repeat (off → all → one)
+  e               Equalizer (10-band; 1–5: Flat/Bass/Electronic/Vocal/Rock)
   l               Like current track
 
 Navigation
@@ -197,6 +230,8 @@ Lists
   J / K           Reorder queue
 
 Account
-  L               Sign in / account
-  Enter (first)   Browser sign-in"#
+  L               Account menu
+  L (in menu)     Log out (when signed in)
+  Enter (menu)    Sign in / Log out
+  P (menu)        Paste cookie"#
 }

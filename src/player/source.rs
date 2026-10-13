@@ -606,8 +606,12 @@ pub const START_BUFFER_BYTES: u64 = 96 * 1024;
 
 pub fn open_decoder(gf: Arc<GrowingFile>) -> Result<SymphoniaSource> {
     gf.wait_bytes(START_BUFFER_BYTES)?;
-    let reader = gf.reader();
-    SymphoniaSource::open(reader, "m4a").context("opening audio stream")
+    // Prefer m4a (itag 140); fall back to mp4 for progressive itag 18 muxed streams.
+    match SymphoniaSource::open(gf.reader(), "m4a") {
+        Ok(src) => Ok(src),
+        Err(e) => SymphoniaSource::open(gf.reader(), "mp4")
+            .with_context(|| format!("opening audio stream (m4a failed: {e})")),
+    }
 }
 
 /// Like `open_decoder`, but if the first probe fails while more data is still arriving,
@@ -624,10 +628,7 @@ pub fn open_decoder_resilient(gf: Arc<GrowingFile>) -> Result<SymphoniaSource> {
             if gf.is_failed() {
                 return Err(first);
             }
-            let reader = gf.reader();
-            SymphoniaSource::open(reader, "m4a").map_err(|e| {
-                first.context(format!("retry also failed: {e}"))
-            })
+            open_decoder(gf).map_err(|e| first.context(format!("retry also failed: {e}")))
         }
     }
 }

@@ -161,21 +161,31 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
     let volume = config.playback.volume;
     let autoplay = config.playback.autoplay;
     let cache_mb = config.playback.cache_size_mb;
+    let eq_params = player::EqParams {
+        enabled: config.playback.eq_enabled,
+        gains_db: config.playback.eq_gains,
+    }
+    .clamped();
     // Shared with the audio thread — UI reads this on each tick so the
     // visualizer moves even when no player commands are in flight.
     let viz_samples = player::SampleBuffer::default();
     let viz_samples_player = viz_samples.clone();
     let viz_samples_ui = viz_samples.clone();
 
+    let player_cookies = cookies.clone();
     let player_handle = tokio::spawn(async move {
         let mut player = PlayerService::new(
             paths_p.clone(),
             volume,
             autoplay,
             cache_mb,
+            eq_params,
             event_tx_p.clone(),
             viz_samples_player,
         );
+        if player_cookies.is_some() {
+            player.set_cookies(player_cookies).await;
+        }
         let mut last_queue_len = usize::MAX;
         let mut last_cursor = usize::MAX;
 
@@ -242,6 +252,8 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
                     player.shutdown();
                     break;
                 }
+                PlayerCommand::SetEq(params) => player.set_eq(params),
+                PlayerCommand::SetCookies(c) => player.set_cookies(c).await,
             }
             // Sync queue in *play* order so UI cursor / JumpTo match what plays
             // (storage order + play-order cursor desynced under shuffle/radio).
@@ -264,6 +276,7 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
     let event_tx_c = event_tx.clone();
     let paths_c = paths.clone();
     let api_cmd_tx2 = api_cmd_tx.clone();
+    let player_cmd_tx_c = player_cmd_tx.clone();
     tokio::spawn(async move {
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
@@ -303,9 +316,21 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
                         }
                     });
                 }
+                Command::ApplyAuth(ref session) => {
+                    let _ = player_cmd_tx_c
+                        .send(PlayerCommand::SetCookies(Some(session.cookies.clone())));
+                    let _ = api_cmd_tx2.send(cmd);
+                }
+                Command::ClearAuth => {
+                    let _ = player_cmd_tx_c.send(PlayerCommand::SetCookies(None));
+                    let _ = api_cmd_tx2.send(Command::ClearAuth);
+                }
                 Command::Logout => {
                     let mut a = AuthService::new(paths_c.clone());
                     let _ = a.logout();
+                    // Drop live Innertube + stream-resolver cookies immediately.
+                    let _ = api_cmd_tx2.send(Command::ClearAuth);
+                    let _ = player_cmd_tx_c.send(PlayerCommand::SetCookies(None));
                     let _ = event_tx_c.send(AppEvent::AuthState(AuthStateEvent::LoggedOut));
                 }
                 Command::FetchArt { url, video_id } => {

@@ -23,6 +23,16 @@ pub enum Action {
     CloseOverlay,
     CommandPalette,
     Escape,
+    /// Open the equalizer overlay.
+    OpenEqualizer,
+    /// Toggle EQ enabled/bypass.
+    EqToggle,
+    /// Reset the selected band to 0 dB.
+    EqResetBand,
+    /// Apply preset index (0 = Flat …).
+    EqPreset(usize),
+    /// Reset all bands to Flat.
+    EqFlat,
 
     // Playback
     PlayPause,
@@ -146,6 +156,8 @@ pub enum Command {
     },
     /// Main → API worker: install cookies + visitor / user-session ids.
     ApplyAuth(crate::auth::AuthSession),
+    /// Main → API worker: drop cookies / auth meta (guest).
+    ClearAuth,
     Logout,
     UpdateMediaControls,
 }

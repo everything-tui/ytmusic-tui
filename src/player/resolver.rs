@@ -7,7 +7,8 @@ use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 // ---------------------------------------------------------------------------
-// Client constants — update these together when YouTube breaks mobile /player.
+// Client constants — mirror yt-dlp INNERTUBE_CLIENTS (no GVS PO token required).
+// ANDROID / IOS require PO tokens and are intentionally omitted.
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
@@ -17,39 +18,51 @@ struct PlayerClient {
     client_id: &'static str,
     version: &'static str,
     user_agent: &'static str,
+    /// Send Cookie header when we have a session.
+    wants_cookies: bool,
+    /// Attach Origin/Referer suitable for web_embedded CDN fetches.
+    web_headers: bool,
 }
 
-/// ANDROID_VR returns plaintext adaptive URLs without PO tokens / signatureCipher.
-const ANDROID_VR: PlayerClient = PlayerClient {
-    name: "ANDROID_VR",
-    client_id: "28",
-    version: "1.65.10",
-    user_agent: "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; Quest 3 Build/SQ3A.220605.009.A1) gzip",
+/// yt-dlp authenticated default #1 — plaintext adaptive audio, no PO token.
+const WEB_EMBEDDED: PlayerClient = PlayerClient {
+    name: "WEB_EMBEDDED",
+    client_id: "56",
+    version: "2.20260708.00.00",
+    user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)",
+    wants_cookies: true,
+    web_headers: true,
 };
 
-const IOS: PlayerClient = PlayerClient {
-    name: "IOS",
-    client_id: "5",
-    version: "20.10.4",
-    user_agent: "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+/// yt-dlp JS-less default — no PO token for HTTPS.
+const VISIONOS: PlayerClient = PlayerClient {
+    name: "VISIONOS",
+    client_id: "101",
+    version: "1.02",
+    user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+    wants_cookies: false,
+    web_headers: false,
 };
 
-const ANDROID: PlayerClient = PlayerClient {
-    name: "ANDROID",
-    client_id: "3",
-    version: "20.10.38",
-    user_agent: "com.google.android.youtube/20.10.38 (Linux; U; Android 14; en_US) gzip",
+/// yt-dlp `tv_samsung` — last resort; cookies help avoid DRM-only responses.
+const TV_SAMSUNG: PlayerClient = PlayerClient {
+    name: "TVHTML5",
+    client_id: "7",
+    version: "7.20260707.07.00",
+    user_agent: "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1",
+    wants_cookies: true,
+    web_headers: false,
 };
 
-const CLIENTS: &[PlayerClient] = &[ANDROID_VR, IOS, ANDROID];
+const CLIENTS: &[PlayerClient] = &[WEB_EMBEDDED, VISIONOS, TV_SAMSUNG];
 
-const PLAYER_URL: &str = "https://youtubei.googleapis.com/youtubei/v1/player?prettyPrint=false";
-const VISITOR_URL: &str = "https://youtubei.googleapis.com/youtubei/v1/visitor_id?prettyPrint=false";
+const PLAYER_URL: &str = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
+const VISITOR_URL: &str = "https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false";
 
-// Prefer itag 140 (AAC-LC 128k). Avoid preferring 139 (HE-AAC) — half-rate SBR
-// confuses some decoders into 2× duration with trailing silence.
 const PREFERRED_ITAG: i64 = 140;
 const LAST_RESORT_ITAG: i64 = 139;
+/// Progressive muxed mp4 (H.264 + AAC) — works without PO on some clients.
+const PROGRESSIVE_ITAG: i64 = 18;
 
 #[derive(Debug, Clone)]
 pub struct ResolvedStream {
@@ -61,6 +74,8 @@ pub struct ResolvedStream {
     pub resolved_at: Instant,
     /// Absolute expiry; derived from `streamingData.expiresInSeconds` when present.
     pub expires_at: Instant,
+    /// Innertube client that produced this URL.
+    pub client_name: String,
 }
 
 impl ResolvedStream {
@@ -90,11 +105,13 @@ struct StreamingData {
     #[serde(rename = "expiresInSeconds")]
     expires_in_seconds: Option<String>,
     #[serde(rename = "adaptiveFormats", default)]
-    adaptive_formats: Vec<AdaptiveFormat>,
+    adaptive_formats: Vec<StreamFormat>,
+    #[serde(rename = "formats", default)]
+    formats: Vec<StreamFormat>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct AdaptiveFormat {
+struct StreamFormat {
     itag: Option<i64>,
     url: Option<String>,
     #[serde(rename = "mimeType")]
@@ -116,7 +133,10 @@ struct ResponseContext {
 pub struct Resolver {
     http: reqwest::Client,
     visitor_data: Arc<Mutex<Option<String>>>,
+    cookies: Arc<Mutex<Option<String>>>,
     cache: Arc<Mutex<HashMap<String, ResolvedStream>>>,
+    /// Client names skipped on the next resolve (CDN 403 failover).
+    skip_clients: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 impl Resolver {
@@ -129,8 +149,17 @@ impl Resolver {
         Self {
             http,
             visitor_data: Arc::new(Mutex::new(None)),
+            cookies: Arc::new(Mutex::new(None)),
             cache: Arc::new(Mutex::new(HashMap::new())),
+            skip_clients: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub async fn set_cookies(&self, cookies: Option<String>) {
+        *self.cookies.lock().await = cookies;
+        // Auth change invalidates any cookie-bound URLs.
+        self.cache.lock().await.clear();
+        self.skip_clients.lock().await.clear();
     }
 
     pub async fn resolve(&self, video_id: &str) -> Result<ResolvedStream> {
@@ -138,7 +167,14 @@ impl Resolver {
             let cache = self.cache.lock().await;
             if let Some(s) = cache.get(video_id) {
                 if !s.is_expired() {
-                    return Ok(s.clone());
+                    let skip = self.skip_clients.lock().await;
+                    let skipped = skip
+                        .get(video_id)
+                        .map(|v| v.iter().any(|c| c == &s.client_name))
+                        .unwrap_or(false);
+                    if !skipped {
+                        return Ok(s.clone());
+                    }
                 }
             }
         }
@@ -157,16 +193,41 @@ impl Resolver {
         self.cache.lock().await.remove(video_id);
     }
 
+    /// Drop a cached URL and skip that client on the next resolve (CDN 403).
+    pub async fn invalidate_skipping_client(&self, video_id: &str, client_name: &str) {
+        self.cache.lock().await.remove(video_id);
+        let mut skip = self.skip_clients.lock().await;
+        let entry = skip.entry(video_id.to_string()).or_default();
+        if !entry.iter().any(|c| c == client_name) {
+            entry.push(client_name.to_string());
+        }
+    }
+
+    /// Clear CDN-403 skips after a download actually succeeds.
+    pub async fn clear_client_skips(&self, video_id: &str) {
+        self.skip_clients.lock().await.remove(video_id);
+    }
+
     async fn resolve_uncached(&self, video_id: &str) -> Result<ResolvedStream> {
         let mut last_err: Option<anyhow::Error> = None;
         let mut retried_visitor = false;
+        let skipped = self
+            .skip_clients
+            .lock()
+            .await
+            .get(video_id)
+            .cloned()
+            .unwrap_or_default();
 
         for &client in CLIENTS {
+            if skipped.iter().any(|c| c == client.name) {
+                debug!("skipping {} for {video_id} (prior CDN 403)", client.name);
+                continue;
+            }
             match self.resolve_with_client(video_id, client).await {
                 Ok(stream) => return Ok(stream),
                 Err(e) => {
                     let msg = e.to_string();
-                    // Refresh visitor once on LOGIN_REQUIRED, then retry the same client.
                     if !retried_visitor && msg.contains("LOGIN_REQUIRED") {
                         retried_visitor = true;
                         *self.visitor_data.lock().await = None;
@@ -195,16 +256,31 @@ impl Resolver {
     ) -> Result<ResolvedStream> {
         let visitor = self.ensure_visitor(client).await?;
         let body = player_body(video_id, client, &visitor);
+        let cookies = self.cookies.lock().await.clone();
 
         debug!("player {} video_id={video_id}", client.name);
-        let resp = self
+        let mut req = self
             .http
             .post(PLAYER_URL)
             .header("Content-Type", "application/json")
             .header("User-Agent", client.user_agent)
             .header("X-Youtube-Client-Name", client.client_id)
             .header("X-Youtube-Client-Version", client.version)
-            .header("X-Goog-Visitor-Id", &visitor)
+            .header("X-Goog-Visitor-Id", &visitor);
+
+        if client.web_headers {
+            req = req
+                .header("Origin", "https://www.youtube.com")
+                .header("Referer", "https://www.youtube.com/");
+        }
+
+        if client.wants_cookies {
+            if let Some(ref c) = cookies {
+                req = req.header("Cookie", c);
+            }
+        }
+
+        let resp = req
             .json(&body)
             .send()
             .await
@@ -223,7 +299,6 @@ impl Resolver {
         let parsed: PlayerResponse =
             serde_json::from_str(&text).context("parsing player JSON")?;
 
-        // Absorb visitor from response if we didn't have one.
         if let Some(vd) = parsed
             .response_context
             .as_ref()
@@ -234,6 +309,10 @@ impl Resolver {
                 *slot = Some(vd);
             }
         }
+        let visitor_for_cdn = {
+            let slot = self.visitor_data.lock().await;
+            slot.clone().unwrap_or(visitor)
+        };
 
         let playability = parsed.playability.as_ref();
         let status_str = playability
@@ -251,8 +330,8 @@ impl Resolver {
             .as_ref()
             .context("player response missing streamingData")?;
 
-        let format = select_format(&streaming.adaptive_formats)
-            .context("no playable audio/mp4 format with plaintext url")?;
+        let format = select_format(&streaming.adaptive_formats, &streaming.formats)
+            .context("no playable plaintext audio/mp4 (or itag 18) url")?;
 
         let url = format.url.clone().context("selected format missing url")?;
         if !url.starts_with("http") {
@@ -269,20 +348,33 @@ impl Resolver {
             .and_then(|s| s.parse::<u64>().ok())
             .filter(|&s| s > 60)
             .unwrap_or(5 * 3600);
-        // Trim 60s so we re-resolve before the CDN rejects the URL.
         let expires_at = Instant::now() + Duration::from_secs(expires_in.saturating_sub(60));
+
+        let ext = if format.itag == Some(PROGRESSIVE_ITAG) {
+            "mp4"
+        } else {
+            "m4a"
+        };
 
         let mut headers = HashMap::new();
         headers.insert("User-Agent".into(), client.user_agent.to_string());
+        if !visitor_for_cdn.is_empty() {
+            headers.insert("X-Goog-Visitor-Id".into(), visitor_for_cdn);
+        }
+        if client.web_headers {
+            headers.insert("Origin".into(), "https://www.youtube.com".into());
+            headers.insert("Referer".into(), "https://www.youtube.com/".into());
+        }
 
         Ok(ResolvedStream {
             url,
             headers,
             filesize,
             duration,
-            ext: "m4a".into(),
+            ext: ext.into(),
             resolved_at: Instant::now(),
             expires_at,
+            client_name: client.name.to_string(),
         })
     }
 
@@ -301,7 +393,6 @@ impl Resolver {
             }
             Err(e) => {
                 warn!("visitor_id fetch failed ({e}); continuing without");
-                // Empty visitor still works for some clients; player response may fill it.
                 Ok(String::new())
             }
         }
@@ -333,73 +424,99 @@ impl Resolver {
 }
 
 fn player_body(video_id: &str, client: PlayerClient, visitor: &str) -> serde_json::Value {
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "context": client_context(client, visitor),
         "videoId": video_id,
         "contentCheckOk": true,
-        "racyCheckOk": true
-    })
+        "racyCheckOk": true,
+        "playbackContext": {
+            "contentPlaybackContext": {
+                "html5Preference": "HTML5_PREF_WANTS",
+                // Empty is fine; yt-dlp includes the field for web_embedded always.
+                "encryptedHostFlags": ""
+            }
+        }
+    });
+    // WEB_EMBEDDED_PLAYER uses Innertube name WEB_EMBEDDED_PLAYER, not WEB_EMBEDDED.
+    if client.name == "WEB_EMBEDDED" {
+        if let Some(ctx) = body.get_mut("context").and_then(|c| c.as_object_mut()) {
+            if let Some(client_obj) = ctx.get_mut("client").and_then(|c| c.as_object_mut()) {
+                client_obj.insert(
+                    "clientName".into(),
+                    serde_json::Value::String("WEB_EMBEDDED_PLAYER".into()),
+                );
+            }
+        }
+    }
+    body
 }
 
 fn client_context(client: PlayerClient, visitor: &str) -> serde_json::Value {
-    let mut c = match client.name {
-        "ANDROID_VR" => serde_json::json!({
-            "clientName": client.name,
+    let mut client_obj = match client.name {
+        "WEB_EMBEDDED" => serde_json::json!({
+            "clientName": "WEB_EMBEDDED_PLAYER",
             "clientVersion": client.version,
             "hl": "en",
             "gl": "US",
-            "deviceMake": "Oculus",
-            "deviceModel": "Quest 3",
-            "androidSdkVersion": 32,
-            "osName": "Android",
-            "osVersion": "12L",
-            "platform": "MOBILE"
+            "userAgent": client.user_agent
         }),
-        "IOS" => serde_json::json!({
-            "clientName": client.name,
+        "VISIONOS" => serde_json::json!({
+            "clientName": "VISIONOS",
             "clientVersion": client.version,
             "hl": "en",
             "gl": "US",
             "deviceMake": "Apple",
-            "deviceModel": "iPhone16,2",
-            "osName": "iPhone",
-            "osVersion": "18.3.2",
-            "platform": "MOBILE"
+            "deviceModel": "RealityDevice17,1",
+            "osName": "visionOS",
+            "osVersion": "26.5.23O471",
+            "userAgent": client.user_agent
         }),
         _ => serde_json::json!({
-            "clientName": client.name,
+            "clientName": "TVHTML5",
             "clientVersion": client.version,
             "hl": "en",
             "gl": "US",
-            "androidSdkVersion": 34,
-            "osName": "Android",
-            "osVersion": "14",
-            "platform": "MOBILE"
+            "deviceMake": "Samsung",
+            "deviceModel": "UKS9800",
+            "osName": "Tizen",
+            "osVersion": "2.4.0",
+            "userAgent": client.user_agent
         }),
     };
+
     if !visitor.is_empty() {
-        if let Some(obj) = c.as_object_mut() {
+        if let Some(obj) = client_obj.as_object_mut() {
             obj.insert(
                 "visitorData".into(),
                 serde_json::Value::String(visitor.into()),
             );
         }
     }
-    serde_json::json!({ "client": c })
+
+    let mut ctx = serde_json::json!({ "client": client_obj });
+    if client.name == "WEB_EMBEDDED" {
+        if let Some(obj) = ctx.as_object_mut() {
+            obj.insert(
+                "thirdParty".into(),
+                serde_json::json!({
+                    "embedUrl": "https://www.reddit.com/"
+                }),
+            );
+        }
+    }
+    ctx
 }
 
-/// Pick itag 140, else best non-139 audio/mp4 with plaintext url, else 139.
-fn select_format(formats: &[AdaptiveFormat]) -> Option<&AdaptiveFormat> {
-    let mut best: Option<&AdaptiveFormat> = None;
-    let mut fallback_139: Option<&AdaptiveFormat> = None;
+/// Prefer itag 140, else best adaptive audio/mp4, else 139, else progressive itag 18.
+fn select_format<'a>(
+    adaptive: &'a [StreamFormat],
+    progressive: &'a [StreamFormat],
+) -> Option<&'a StreamFormat> {
+    let mut best: Option<&StreamFormat> = None;
+    let mut fallback_139: Option<&StreamFormat> = None;
 
-    for f in formats {
-        let has_url = f
-            .url
-            .as_ref()
-            .map(|u| u.starts_with("http"))
-            .unwrap_or(false);
-        if !has_url {
+    for f in adaptive {
+        if !has_http_url(f) {
             continue;
         }
         let mime = f.mime_type.as_deref().unwrap_or("");
@@ -419,7 +536,25 @@ fn select_format(formats: &[AdaptiveFormat]) -> Option<&AdaptiveFormat> {
             }
         }
     }
-    best.or(fallback_139)
+    if let Some(f) = best.or(fallback_139) {
+        return Some(f);
+    }
+
+    progressive.iter().find(|f| {
+        f.itag == Some(PROGRESSIVE_ITAG)
+            && has_http_url(f)
+            && f.mime_type
+                .as_deref()
+                .map(|m| m.starts_with("video/mp4"))
+                .unwrap_or(false)
+    })
+}
+
+fn has_http_url(f: &StreamFormat) -> bool {
+    f.url
+        .as_ref()
+        .map(|u| u.starts_with("http"))
+        .unwrap_or(false)
 }
 
 fn parse_u64_value(v: Option<&serde_json::Value>) -> Option<u64> {
@@ -455,8 +590,8 @@ mod tests {
     #[test]
     fn selects_itag_140() {
         let resp = load_fixture("player_ok_itag140.json");
-        let formats = &resp.streaming.unwrap().adaptive_formats;
-        let f = select_format(formats).expect("format");
+        let streaming = resp.streaming.unwrap();
+        let f = select_format(&streaming.adaptive_formats, &streaming.formats).expect("format");
         assert_eq!(f.itag, Some(140));
         assert!(f.url.as_ref().unwrap().starts_with("https://"));
     }
@@ -464,15 +599,15 @@ mod tests {
     #[test]
     fn rejects_cipher_only() {
         let resp = load_fixture("player_cipher_only.json");
-        let formats = &resp.streaming.unwrap().adaptive_formats;
-        assert!(select_format(formats).is_none());
+        let streaming = resp.streaming.unwrap();
+        assert!(select_format(&streaming.adaptive_formats, &streaming.formats).is_none());
     }
 
     #[test]
     fn bitrate_fallback_without_140() {
         let resp = load_fixture("player_no_140.json");
-        let formats = &resp.streaming.unwrap().adaptive_formats;
-        let f = select_format(formats).expect("format");
+        let streaming = resp.streaming.unwrap();
+        let f = select_format(&streaming.adaptive_formats, &streaming.formats).expect("format");
         assert_eq!(f.itag, Some(141));
         assert_eq!(f.bitrate, Some(256000));
     }
@@ -487,7 +622,7 @@ mod tests {
     #[test]
     fn prefers_140_over_higher_bitrate() {
         let formats = vec![
-            AdaptiveFormat {
+            StreamFormat {
                 itag: Some(141),
                 url: Some("https://googlevideo.com/a".into()),
                 mime_type: Some("audio/mp4; codecs=\"mp4a.40.2\"".into()),
@@ -495,7 +630,7 @@ mod tests {
                 content_length: None,
                 approx_duration_ms: None,
             },
-            AdaptiveFormat {
+            StreamFormat {
                 itag: Some(140),
                 url: Some("https://googlevideo.com/b".into()),
                 mime_type: Some("audio/mp4; codecs=\"mp4a.40.2\"".into()),
@@ -504,13 +639,13 @@ mod tests {
                 approx_duration_ms: None,
             },
         ];
-        let f = select_format(&formats).unwrap();
+        let f = select_format(&formats, &[]).unwrap();
         assert_eq!(f.itag, Some(140));
     }
 
     #[test]
     fn last_resort_139() {
-        let formats = vec![AdaptiveFormat {
+        let formats = vec![StreamFormat {
             itag: Some(139),
             url: Some("https://googlevideo.com/c".into()),
             mime_type: Some("audio/mp4; codecs=\"mp4a.40.5\"".into()),
@@ -518,7 +653,35 @@ mod tests {
             content_length: None,
             approx_duration_ms: None,
         }];
-        let f = select_format(&formats).unwrap();
+        let f = select_format(&formats, &[]).unwrap();
         assert_eq!(f.itag, Some(139));
+    }
+
+    #[test]
+    fn progressive_itag_18_fallback() {
+        let progressive = vec![StreamFormat {
+            itag: Some(18),
+            url: Some("https://googlevideo.com/d".into()),
+            mime_type: Some("video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"".into()),
+            bitrate: Some(500000),
+            content_length: None,
+            approx_duration_ms: None,
+        }];
+        let f = select_format(&[], &progressive).unwrap();
+        assert_eq!(f.itag, Some(18));
+    }
+
+    #[test]
+    fn web_embedded_context_has_embed_url() {
+        let ctx = client_context(WEB_EMBEDDED, "vis");
+        assert_eq!(
+            ctx.pointer("/thirdParty/embedUrl")
+                .and_then(|v| v.as_str()),
+            Some("https://www.reddit.com/")
+        );
+        assert_eq!(
+            ctx.pointer("/client/clientName").and_then(|v| v.as_str()),
+            Some("WEB_EMBEDDED_PLAYER")
+        );
     }
 }

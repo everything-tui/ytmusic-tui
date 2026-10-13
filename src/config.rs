@@ -33,6 +33,12 @@ pub struct PlaybackConfig {
     pub seek_step_secs: u64,
     pub cache_size_mb: u64,
     pub prefetch: bool,
+    /// When false, EQ is bypassed.
+    pub eq_enabled: bool,
+    /// Per-band gains in dB (10-band graphic EQ), clamped to ±12.
+    /// Accepts shorter arrays from older configs (padded with 0).
+    #[serde(deserialize_with = "deserialize_eq_gains", default = "default_eq_gains")]
+    pub eq_gains: [f32; 10],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -72,8 +78,22 @@ impl Default for PlaybackConfig {
             seek_step_secs: 5,
             cache_size_mb: 1024,
             prefetch: true,
+            eq_enabled: true,
+            eq_gains: default_eq_gains(),
         }
     }
+}
+
+fn default_eq_gains() -> [f32; 10] {
+    [0.0; 10]
+}
+
+fn deserialize_eq_gains<'de, D>(deserializer: D) -> Result<[f32; 10], D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: Vec<f32> = Deserialize::deserialize(deserializer)?;
+    Ok(crate::player::eq::normalize_gains(&v))
 }
 
 impl Config {
@@ -86,7 +106,10 @@ impl Config {
         }
         let text = fs::read_to_string(&path)
             .with_context(|| format!("reading config {}", path.display()))?;
-        let cfg: Config = toml::from_str(&text).context("parsing config.toml")?;
+        let mut cfg: Config = toml::from_str(&text).context("parsing config.toml")?;
+        for g in &mut cfg.playback.eq_gains {
+            *g = g.clamp(-12.0, 12.0);
+        }
         Ok(cfg)
     }
 
