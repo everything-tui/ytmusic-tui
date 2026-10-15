@@ -51,9 +51,9 @@ impl Paths {
         self.data_dir.join("auth.json")
     }
 
-    /// Unix socket used by the local control / MCP bridge.
-    pub fn control_socket(&self) -> PathBuf {
-        self.data_dir.join("control.sock")
+    /// Port + token for the local control / MCP bridge (loopback TCP).
+    pub fn control_file(&self) -> PathBuf {
+        self.data_dir.join("control.json")
     }
 
     pub fn audio_cache_dir(&self) -> PathBuf {

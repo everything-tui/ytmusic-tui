@@ -1,12 +1,13 @@
 //! Local control interface so external agents (e.g. Claude via MCP) can drive the player.
 //!
-//! The running TUI listens on a Unix socket (`Paths::control_socket`) and speaks
-//! newline-delimited JSON: one request object per line, one response per line.
+//! The running TUI listens on a loopback TCP port (the same on Linux, macOS and Windows)
+//! and records `{port, token}` in `Paths::control_file`. Clients send `{"auth": token}`
+//! as their first line, then newline-delimited JSON requests, one response per line.
 //! Playback intents are injected as regular [`Action`]s into the UI loop so app state
 //! (shuffle / mute / volume) stays consistent with keyboard input.
 //!
 //! Authentication data (cookies, sessions) is deliberately unreachable from here, and
-//! searches use a separate guest client.
+//! searches use a separate guest client. The listener only ever binds 127.0.0.1.
 
 pub mod mcp;
 
@@ -335,11 +336,49 @@ async fn dispatch(ctx: &Ctx, req: Value) -> Result<Value> {
     }
 }
 
-#[cfg(unix)]
-async fn serve_conn(ctx: Arc<Ctx>, stream: tokio::net::UnixStream) {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+/// Connection details written for clients (`yt-tui mcp`).
+#[derive(Debug, Serialize, serde::Deserialize)]
+pub struct Endpoint {
+    pub port: u16,
+    pub token: String,
+}
+
+impl Endpoint {
+    pub fn load(paths: &Paths) -> Result<Self> {
+        let text = std::fs::read_to_string(paths.control_file())?;
+        Ok(serde_json::from_str(&text)?)
+    }
+}
+
+fn token_matches(given: &str, expected: &str) -> bool {
+    // Constant-time compare: avoid leaking the token prefix through timing.
+    given.len() == expected.len()
+        && given
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
+}
+
+async fn serve_conn(ctx: Arc<Ctx>, token: Arc<String>, stream: tokio::net::TcpStream) {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     let (r, mut w) = stream.into_split();
-    let mut lines = BufReader::new(r).lines();
+    let mut reader = BufReader::new(r);
+
+    // First line must authenticate; bound its size so strangers can't buffer data.
+    let mut first = String::new();
+    let authed = match (&mut reader).take(512).read_line(&mut first).await {
+        Ok(n) if n > 0 => serde_json::from_str::<Value>(&first)
+            .ok()
+            .and_then(|v| v.get("auth").and_then(Value::as_str).map(str::to_owned))
+            .is_some_and(|t| token_matches(&t, &token)),
+        _ => false,
+    };
+    if !authed {
+        return;
+    }
+
+    let mut lines = reader.lines();
     while let Ok(Some(line)) = lines.next_line().await {
         if line.trim().is_empty() {
             continue;
@@ -359,28 +398,38 @@ async fn serve_conn(ctx: Arc<Ctx>, stream: tokio::net::UnixStream) {
     }
 }
 
-/// Starts the control socket. Returns the snapshot handle the UI should publish into
+/// Starts the control listener. Returns the snapshot handle the UI should publish into
 /// and the receiver for actions it should apply.
-#[cfg(unix)]
 pub fn start(
     paths: &Paths,
     player_tx: mpsc::UnboundedSender<PlayerCommand>,
 ) -> Result<(SharedSnapshot, mpsc::UnboundedReceiver<Action>)> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 
-    let sock = paths.control_socket();
-    if sock.exists() {
-        // A live instance answers; a stale file from a crash does not.
-        if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
-            return Err(anyhow!(
-                "another yt-tui already owns {}",
-                sock.display()
-            ));
+    let file = paths.control_file();
+    if let Ok(old) = Endpoint::load(paths) {
+        // A live instance accepts connections; a leftover file from a crash does not.
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, old.port));
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok() {
+            return Err(anyhow!("another yt-tui already owns {}", file.display()));
         }
-        let _ = std::fs::remove_file(&sock);
     }
-    let listener = tokio::net::UnixListener::bind(&sock)?;
-    std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))?;
+    let _ = std::fs::remove_file(&file);
+
+    let std_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+    std_listener.set_nonblocking(true)?;
+    let port = std_listener.local_addr()?.port();
+    let listener = tokio::net::TcpListener::from_std(std_listener)?;
+
+    let mut raw = [0u8; 24];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut raw);
+    let token = Arc::new(hex::encode(raw));
+
+    let endpoint = serde_json::to_vec(&Endpoint {
+        port,
+        token: (*token).clone(),
+    })?;
+    write_private(&file, &endpoint)?;
 
     let snapshot: SharedSnapshot = Arc::new(Mutex::new(Snapshot {
         state: "stopped".into(),
@@ -400,7 +449,7 @@ pub fn start(
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    tokio::spawn(serve_conn(ctx.clone(), stream));
+                    tokio::spawn(serve_conn(ctx.clone(), token.clone(), stream));
                 }
                 Err(e) => {
                     tracing::warn!("control accept failed: {e}");
@@ -409,53 +458,75 @@ pub fn start(
             }
         }
     });
-    tracing::info!("control socket listening at {}", sock.display());
+    tracing::info!("control bridge listening on 127.0.0.1:{port}");
     Ok((snapshot, action_rx))
 }
 
-#[cfg(not(unix))]
-pub fn start(
-    _paths: &Paths,
-    _player_tx: mpsc::UnboundedSender<PlayerCommand>,
-) -> Result<(SharedSnapshot, mpsc::UnboundedReceiver<Action>)> {
-    Err(anyhow!("control socket is only supported on unix platforms"))
+/// Writes a file readable only by the current user (0600 on Unix; the per-user
+/// profile directory ACL covers Windows).
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path)?;
+    f.write_all(bytes)?;
+    Ok(())
 }
 
 pub fn cleanup(paths: &Paths) {
-    let _ = std::fs::remove_file(paths.control_socket());
+    let _ = std::fs::remove_file(paths.control_file());
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    async fn roundtrip(sock: &std::path::Path, req: Value) -> Value {
-        let stream = tokio::net::UnixStream::connect(sock).await.unwrap();
+    async fn connect(ep: &Endpoint) -> tokio::net::TcpStream {
+        tokio::net::TcpStream::connect(("127.0.0.1", ep.port))
+            .await
+            .unwrap()
+    }
+
+    async fn roundtrip(ep: &Endpoint, req: Value) -> Value {
+        let stream = connect(ep).await;
         let (r, mut w) = stream.into_split();
-        w.write_all(format!("{req}\n").as_bytes()).await.unwrap();
+        let auth = json!({ "auth": ep.token });
+        w.write_all(format!("{auth}\n{req}\n").as_bytes())
+            .await
+            .unwrap();
         let mut line = String::new();
         BufReader::new(r).read_line(&mut line).await.unwrap();
         serde_json::from_str(&line).unwrap()
     }
 
-    #[tokio::test]
-    async fn socket_routes_commands() {
+    fn temp_paths() -> (tempfile::TempDir, Paths) {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {
             config_dir: dir.path().into(),
             data_dir: dir.path().into(),
             cache_dir: dir.path().into(),
         };
+        (dir, paths)
+    }
+
+    #[tokio::test]
+    async fn routes_commands() {
+        let (_dir, paths) = temp_paths();
         let (player_tx, mut player_rx) = mpsc::unbounded_channel();
         let (snapshot, mut action_rx) = start(&paths, player_tx).unwrap();
-        let sock = paths.control_socket();
+        let ep = Endpoint::load(&paths).unwrap();
 
-        let r = roundtrip(&sock, json!({"cmd": "pause"})).await;
+        let r = roundtrip(&ep, json!({"cmd": "pause"})).await;
         assert_eq!(r["ok"], true);
         assert!(matches!(action_rx.recv().await, Some(Action::Pause)));
 
-        let r = roundtrip(&sock, json!({"cmd": "volume", "percent": 150})).await;
+        let r = roundtrip(&ep, json!({"cmd": "volume", "percent": 150})).await;
         assert_eq!(r["ok"], true);
         match action_rx.recv().await {
             Some(Action::SetVolume(v)) => assert_eq!(v, 1.0),
@@ -463,27 +534,70 @@ mod tests {
         }
 
         // Shuffle is idempotent against the published snapshot.
-        let r = roundtrip(&sock, json!({"cmd": "shuffle", "enabled": false})).await;
+        let r = roundtrip(&ep, json!({"cmd": "shuffle", "enabled": false})).await;
         assert_eq!(r["ok"], true);
         assert!(action_rx.try_recv().is_err());
         snapshot.lock().shuffle = true;
-        roundtrip(&sock, json!({"cmd": "shuffle", "enabled": false})).await;
+        roundtrip(&ep, json!({"cmd": "shuffle", "enabled": false})).await;
         assert!(matches!(action_rx.recv().await, Some(Action::ToggleShuffle)));
 
-        let r = roundtrip(&sock, json!({"cmd": "play_track", "video_id": "abc123"})).await;
+        let r = roundtrip(&ep, json!({"cmd": "play_track", "video_id": "abc123"})).await;
         assert_eq!(r["ok"], true);
         match player_rx.recv().await {
             Some(PlayerCommand::PlayTrack(t)) => assert_eq!(t.video_id, "abc123"),
             other => panic!("unexpected {other:?}"),
         }
 
-        let r = roundtrip(&sock, json!({"cmd": "queue_jump", "index": 3})).await;
+        let r = roundtrip(&ep, json!({"cmd": "queue_jump", "index": 3})).await;
         assert_eq!(r["ok"], false);
 
-        let r = roundtrip(&sock, json!({"cmd": "login"})).await;
+        let r = roundtrip(&ep, json!({"cmd": "login"})).await;
         assert_eq!(r["ok"], false);
 
-        let r = roundtrip(&sock, json!({"cmd": "state"})).await;
+        let r = roundtrip(&ep, json!({"cmd": "state"})).await;
         assert_eq!(r["data"]["state"], "stopped");
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_or_wrong_token() {
+        let (_dir, paths) = temp_paths();
+        let (player_tx, _player_rx) = mpsc::unbounded_channel();
+        let (_snapshot, mut action_rx) = start(&paths, player_tx).unwrap();
+        let ep = Endpoint::load(&paths).unwrap();
+
+        for first in [
+            json!({"cmd": "pause"}),
+            json!({"auth": "wrong"}),
+            json!({"auth": ""}),
+        ] {
+            let stream = connect(&ep).await;
+            let (r, mut w) = stream.into_split();
+            let _ = w
+                .write_all(format!("{first}\n{}\n", json!({"cmd": "pause"})).as_bytes())
+                .await;
+            let mut line = String::new();
+            let n = BufReader::new(r).read_line(&mut line).await.unwrap_or(0);
+            assert_eq!(n, 0, "unauthenticated client must get no reply");
+        }
+        assert!(action_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn second_instance_is_refused_and_stale_file_replaced() {
+        let (_dir, paths) = temp_paths();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let _first = start(&paths, tx.clone()).unwrap();
+        assert!(start(&paths, tx.clone()).is_err());
+
+        // A leftover file pointing at a dead port is replaced.
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead_port = dead.local_addr().unwrap().port();
+        drop(dead);
+        std::fs::write(
+            paths.control_file(),
+            json!({"port": dead_port, "token": "x"}).to_string(),
+        )
+        .unwrap();
+        assert!(start(&paths, tx).is_ok());
     }
 }

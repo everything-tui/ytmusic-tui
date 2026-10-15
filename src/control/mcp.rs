@@ -97,33 +97,32 @@ fn tools() -> Vec<Value> {
     ]
 }
 
-#[cfg(unix)]
 fn call_socket(paths: &Paths, request: &Value) -> Result<Value> {
-    use std::os::unix::net::UnixStream;
+    use std::net::{Ipv4Addr, SocketAddr, TcpStream};
     use std::time::Duration;
 
-    let sock = paths.control_socket();
-    let mut stream = UnixStream::connect(&sock).map_err(|e| {
+    let unreachable = |why: String| {
         anyhow::anyhow!(
-            "cannot reach yt-tui ({e}). Start yt-tui and set `[control] enabled = true` in config.toml."
+            "cannot reach yt-tui ({why}). Start yt-tui and set `[control] enabled = true` in config.toml."
         )
-    })?;
+    };
+    let ep = super::Endpoint::load(paths).map_err(|e| unreachable(e.to_string()))?;
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, ep.port));
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))
+        .map_err(|e| unreachable(e.to_string()))?;
     // Searches hit the network, so allow a generous reply window.
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-    let mut line = request.to_string();
-    line.push('\n');
-    stream.write_all(line.as_bytes())?;
+    let mut payload = json!({ "auth": ep.token }).to_string();
+    payload.push('\n');
+    payload.push_str(&request.to_string());
+    payload.push('\n');
+    stream.write_all(payload.as_bytes())?;
     let mut reply = String::new();
     BufReader::new(&stream).read_line(&mut reply)?;
     if reply.is_empty() {
-        anyhow::bail!("yt-tui closed the connection");
+        anyhow::bail!("yt-tui rejected or closed the connection");
     }
     Ok(serde_json::from_str(&reply)?)
-}
-
-#[cfg(not(unix))]
-fn call_socket(_paths: &Paths, _request: &Value) -> Result<Value> {
-    anyhow::bail!("control socket is only supported on unix platforms")
 }
 
 fn tool_result(text: String, is_error: bool) -> Value {

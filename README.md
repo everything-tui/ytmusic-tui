@@ -181,6 +181,9 @@ yt-tui can be driven by an MCP client such as Claude Code. It is off by default.
    claude mcp add yt-tui -- yt-tui mcp
    ```
 
-The TUI listens on a private Unix socket (`control.sock` in the data directory, mode 0600).
+The TUI listens on `127.0.0.1` (random port) on Linux, macOS and Windows. The port and a
+random per-launch token are written to `control.json` in the data directory (readable only
+by you on Unix); clients must present the token, so other local processes can't drive
+playback. On Windows use `yt-tui.exe mcp`.
 Tools cover playback, volume, shuffle/repeat, search and queue management. Account
 cookies and sign-in are never exposed, and searches run as a guest.
