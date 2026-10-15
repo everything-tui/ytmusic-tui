@@ -171,6 +171,9 @@ pub struct App {
     /// Set on first Ctrl+C; a second press within `CTRL_C_QUIT_WINDOW` exits.
     ctrl_c_armed_at: Option<Instant>,
 
+    /// Where the control bridge reads player state from (None when disabled).
+    pub control: Option<crate::control::SharedSnapshot>,
+
     cmd_tx: mpsc::UnboundedSender<Command>,
     player_cmd_tx: mpsc::UnboundedSender<PlayerCommand>,
 }
@@ -240,6 +243,7 @@ impl App {
             cover_ui: Default::default(),
             hit: Default::default(),
             radio_requested_for: None,
+            control: None,
             volume: config.playback.volume,
             autoplay: config.playback.autoplay,
             eq: crate::player::EqParams {
@@ -2180,12 +2184,21 @@ async fn coalesce_paste_flood(
     }
 }
 
+/// Next control-bridge action; pends forever when the bridge is disabled.
+async fn recv_control(rx: &mut Option<mpsc::UnboundedReceiver<Action>>) -> Option<Action> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 pub async fn run_ui(
     mut app: App,
     mut event_rx: mpsc::UnboundedReceiver<AppEvent>,
     cmd_tx: mpsc::UnboundedSender<Command>,
     mut media: MediaControlsBridge,
     sample_provider: Arc<dyn Fn(&mut Vec<f32>) + Send + Sync>,
+    mut control_rx: Option<mpsc::UnboundedReceiver<Action>>,
 ) -> Result<()> {
     let mut terminal = ratatui::init();
     crossterm::execute!(
@@ -2215,6 +2228,9 @@ pub async fn run_ui(
     terminal.draw(|f| crate::ui::draw(f, &app))?;
     let mut dirty = false;
     let mut last_draw = Instant::now();
+    let mut last_publish = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
 
     let result = loop {
         let playing = app.playback_state == PlaybackState::Playing;
@@ -2288,6 +2304,11 @@ pub async fn run_ui(
                     None => break Ok(()),
                 }
             }
+            Some(a) = recv_control(&mut control_rx) => {
+                let cmds = app.update(a);
+                for c in cmds { let _ = cmd_tx.send(c); }
+                dirty = true;
+            }
             ev = event_rx.recv() => {
                 match ev {
                     Some(ev) => {
@@ -2300,6 +2321,13 @@ pub async fn run_ui(
                     }
                     None => break Ok(()),
                 }
+            }
+        }
+
+        if let Some(shared) = &app.control {
+            if last_publish.elapsed() >= Duration::from_millis(200) {
+                *shared.lock() = crate::control::Snapshot::from_app(&app);
+                last_publish = Instant::now();
             }
         }
 

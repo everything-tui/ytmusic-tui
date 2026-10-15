@@ -8,6 +8,7 @@ mod app;
 mod art;
 mod auth;
 mod config;
+mod control;
 mod debug_log;
 mod doctor;
 mod lyrics;
@@ -53,6 +54,8 @@ enum Commands {
     Logout,
     /// Print environment diagnostics
     Doctor,
+    /// Run an MCP server on stdio that controls a running yt-tui (for Claude etc.)
+    Mcp,
 }
 
 fn main() -> Result<()> {
@@ -67,6 +70,9 @@ fn main() -> Result<()> {
             let report = doctor::doctor_report(&paths);
             println!("{report}");
             return Ok(());
+        }
+        Some(Commands::Mcp) => {
+            return control::mcp::run(&paths);
         }
         Some(Commands::Logout) => {
             let mut auth = AuthService::new(paths.clone());
@@ -401,7 +407,8 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
         });
     }
 
-    let app = App::new(
+    let control_enabled = config.control.enabled;
+    let mut app = App::new(
         paths.clone(),
         config,
         cmd_tx.clone(),
@@ -409,6 +416,18 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
         signed_in,
         account_name,
     );
+
+    // Optional control bridge (MCP): opt-in via `[control] enabled = true`.
+    let mut control_rx = None;
+    if control_enabled {
+        match control::start(&paths, player_cmd_tx.clone()) {
+            Ok((snapshot, rx)) => {
+                app.control = Some(snapshot);
+                control_rx = Some(rx);
+            }
+            Err(e) => tracing::warn!("control bridge disabled: {e}"),
+        }
+    }
 
     // Optional debug play
     if let Some(id) = play {
@@ -432,7 +451,12 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
             viz_samples_ui.snapshot(out);
         });
 
-    let result = run_ui(app, event_rx, cmd_tx, media, sample_provider).await;
+    let control_started = control_rx.is_some();
+    let result = run_ui(app, event_rx, cmd_tx, media, sample_provider, control_rx).await;
+    if control_started {
+        // Only remove the socket if this instance bound it.
+        control::cleanup(&paths);
+    }
 
     let _ = player_cmd_tx.send(PlayerCommand::Shutdown);
     let _ = player_handle.await;

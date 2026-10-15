@@ -166,3 +166,21 @@ This project is **not** affiliated with, endorsed by, or supported by Google or 
 ## License
 
 MIT
+
+## Control from Claude (MCP)
+
+yt-tui can be driven by an MCP client such as Claude Code. It is off by default.
+
+1. Enable it in `config.toml`:
+   ```toml
+   [control]
+   enabled = true
+   ```
+2. Start yt-tui as usual, then register the bridge:
+   ```sh
+   claude mcp add yt-tui -- yt-tui mcp
+   ```
+
+The TUI listens on a private Unix socket (`control.sock` in the data directory, mode 0600).
+Tools cover playback, volume, shuffle/repeat, search and queue management. Account
+cookies and sign-in are never exposed, and searches run as a guest.

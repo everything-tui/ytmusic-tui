@@ -9,6 +9,15 @@ pub struct Config {
     pub ui: UiConfig,
     pub playback: PlaybackConfig,
     pub keys: KeyOverrides,
+    pub control: ControlConfig,
+}
+
+/// Local control interface for external agents (MCP bridge).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ControlConfig {
+    /// Listen on a private Unix socket so `yt-tui mcp` can drive playback. Off by default.
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +65,7 @@ impl Default for Config {
             ui: UiConfig::default(),
             playback: PlaybackConfig::default(),
             keys: KeyOverrides::default(),
+            control: ControlConfig::default(),
         }
     }
 }
