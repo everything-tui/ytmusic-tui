@@ -182,6 +182,7 @@ fn map_search(key: KeyEvent) -> Option<Action> {
         KeyCode::Enter => Some(Action::SearchSubmit),
         KeyCode::Backspace => Some(Action::SearchBackspace),
         KeyCode::Tab => Some(Action::CycleSearchFilter),
+        KeyCode::Left => Some(Action::MoveLeft),
         KeyCode::Down | KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(Action::MoveDown)
         }
@@ -202,7 +203,9 @@ Playback
   space           Play / Pause
   n / p           Next / Previous
   , / .           Seek ±5s   (Shift+← / Shift+→: ±30s)
-  ← / →           Navigate (Home items, Library sections); seek elsewhere
+  ← / →           Navigate Home items / Library sections; ← from the
+                  leftmost item focuses the sidebar menu
+  Sidebar focus   ↑ / ↓ switch page, → / Enter / Esc return to content
   + / -           Volume
   M               Mute
   s               Shuffle

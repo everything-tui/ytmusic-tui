@@ -3,7 +3,7 @@ use crate::api::model::{LyricLine, Lyrics, Track};
 use crate::paths::Paths;
 use anyhow::Result;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;

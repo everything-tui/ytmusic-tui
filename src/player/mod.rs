@@ -7,7 +7,7 @@ pub mod resolver;
 pub mod source;
 
 pub use engine::SampleBuffer;
-pub use eq::{EqHandle, EqParams, BAND_COUNT, BAND_LABELS, GAIN_MAX_DB, GAIN_MIN_DB, PRESETS};
+pub use eq::{EqHandle, EqParams, BAND_COUNT, GAIN_MAX_DB, GAIN_MIN_DB, PRESETS};
 pub use eq_adaptive::{AdaptiveEq, AdaptiveProfile};
 
 use crate::action::{AppEvent, PlayerEvent};
@@ -51,6 +51,9 @@ pub struct PlayerService {
     /// Bumped on every new play request so in-flight resolve/download tasks
     /// can bail before calling `EngineCmd::Load` (avoids playing a stale track).
     play_epoch: Arc<AtomicU64>,
+    /// A restored session is loaded paused with nothing in the engine yet;
+    /// the first play starts the track at `position`.
+    restored_pending: bool,
 }
 
 impl PlayerService {
@@ -94,6 +97,7 @@ impl PlayerService {
             paths,
             current: None,
             play_epoch: Arc::new(AtomicU64::new(0)),
+            restored_pending: false,
         }
     }
 
@@ -149,6 +153,7 @@ impl PlayerService {
         let Some(track) = self.queue.current().cloned() else {
             return;
         };
+        self.restored_pending = false;
         let epoch = self.play_epoch.fetch_add(1, Ordering::SeqCst) + 1;
         // Cut the previous stream immediately so a slow resolve can't keep
         // playing a song the user already navigated away from.
@@ -242,7 +247,20 @@ impl PlayerService {
         });
     }
 
+    /// Resume playback; starts a restored session's track at its saved position.
+    pub fn resume(&mut self) {
+        if self.restored_pending {
+            self.start_current(self.position);
+        } else {
+            self.engine.send(EngineCmd::Play);
+        }
+    }
+
     pub fn toggle(&mut self) {
+        if self.restored_pending {
+            self.start_current(self.position);
+            return;
+        }
         match self.state {
             PlaybackState::Playing => {
                 self.engine.send(EngineCmd::Pause);
@@ -376,6 +394,7 @@ impl PlayerService {
         self.queue = Queue::from_session(tracks, index, shuffle, repeat);
         self.position = position;
         self.state = PlaybackState::Paused;
+        self.restored_pending = self.queue.current().is_some();
         self.current = self.queue.current().cloned();
         info!(
             "restored session: {} tracks, index {index}, paused",

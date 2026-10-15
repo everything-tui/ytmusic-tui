@@ -36,6 +36,8 @@ pub fn width_for(term_w: u16) -> u16 {
 pub struct Sidebar<'a> {
     /// `None` while a detail page or fullscreen view hides the tab highlight.
     pub active_tab: Option<usize>,
+    /// Keyboard focus is on the menu: the active pill is drawn in full accent.
+    pub focused: bool,
     pub library_section: Option<usize>,
     pub account: Option<&'a str>,
     pub signed_in: bool,
@@ -94,67 +96,103 @@ impl<'a> Sidebar<'a> {
         let w = area.width.saturating_sub(3);
         let bottom = area.y + area.height;
 
+        // Header card: rounded box around the logo.
+        let card_x = area.x + 1;
+        let card_w = area.width.saturating_sub(2) as usize;
+        let edge = theme.rule().patch(bg);
+        let inner = card_w.saturating_sub(2);
+        buf.set_string(card_x, area.y + 1, format!("╭{}╮", "─".repeat(inner)), edge);
+        buf.set_string(card_x, area.y + 2, "│", edge);
+        buf.set_string(card_x + card_w as u16 - 1, area.y + 2, "│", edge);
         buf.set_line(
-            x,
-            area.y + 1,
+            card_x + 2,
+            area.y + 2,
             &Line::from(vec![
                 Span::styled("▶ ", theme.accent_bold()),
                 Span::styled("yt-tui", theme.heading()),
             ])
             .patch_style(bg),
-            w,
+            inner.saturating_sub(2) as u16,
         );
+        buf.set_string(card_x, area.y + 3, format!("╰{}╯", "─".repeat(inner)), edge);
 
-        let mut y = area.y + 3;
-        for (i, (icon, label)) in NAV.iter().enumerate() {
-            if y >= bottom {
+        // Nav in two groups; the active entry is a solid accent pill.
+        const GROUPS: [(&str, std::ops::Range<usize>); 2] =
+            [("DISCOVER", 0..3), ("PLAYING", 3..5)];
+        let pill_x = area.x + 1;
+        let pill_w = area.width.saturating_sub(2);
+        let mut y = area.y + 5;
+        'groups: for (title, range) in GROUPS {
+            if y + 1 >= bottom {
                 break;
             }
-            let r = Rect::new(area.x, y, area.width, 1);
-            let active = self.active_tab == Some(i);
-            let row_bg = if active {
-                fill(buf, r, Style::default().bg(theme.bg_selected));
-                buf.set_string(r.x, y, "▎", theme.accent().bg(theme.bg_selected));
-                Style::default().bg(theme.bg_selected)
-            } else {
-                bg
-            };
-            let style = if active { theme.heading() } else { theme.dim() }.patch(row_bg);
-            buf.set_string(x, y, icon, if active { theme.accent_bold().patch(row_bg) } else { style });
-            buf.set_stringn(x + 3, y, label, w.saturating_sub(6) as usize, style);
-            let key = format!("{}", i + 1);
-            buf.set_string(area.x + area.width - 2, y, &key, theme.muted().patch(row_bg));
-            hit.tabs.push((r, i));
+            buf.set_string(x, y, title, theme.muted().patch(bg));
             y += 1;
+            for i in range {
+                if y >= bottom {
+                    break 'groups;
+                }
+                let (icon, label) = NAV[i];
+                let r = Rect::new(area.x, y, area.width, 1);
+                let active = self.active_tab == Some(i);
+                let key = format!("{}", i + 1);
+                if active {
+                    let pill = Rect::new(pill_x, y, pill_w, 1);
+                    let st = if self.focused {
+                        theme.on_accent()
+                    } else {
+                        theme.accent_bold().bg(theme.bg_selected)
+                    };
+                    fill(buf, pill, st);
+                    buf.set_string(x, y, icon, st);
+                    buf.set_stringn(x + 3, y, label, w.saturating_sub(7) as usize, st);
+                    buf.set_string(area.x + area.width - 3, y, &key, st);
+                } else {
+                    buf.set_string(x, y, icon, theme.dim().patch(bg));
+                    buf.set_stringn(
+                        x + 3,
+                        y,
+                        label,
+                        w.saturating_sub(7) as usize,
+                        theme.normal().patch(bg),
+                    );
+                    buf.set_string(area.x + area.width - 3, y, &key, theme.muted().patch(bg));
+                }
+                hit.tabs.push((r, i));
+                y += 1;
 
-            if i == 2 {
-                if let Some(sec) = self.library_section {
-                    for (si, name) in SECTIONS.iter().enumerate() {
-                        if y >= bottom {
-                            break;
+                if i == 2 {
+                    if let Some(sec) = self.library_section {
+                        for (si, name) in SECTIONS.iter().enumerate() {
+                            if y >= bottom {
+                                break 'groups;
+                            }
+                            let r = Rect::new(area.x, y, area.width, 1);
+                            let sel = si == sec;
+                            let (mark, style) = if sel {
+                                ("●", theme.accent_bold())
+                            } else {
+                                ("○", theme.muted())
+                            };
+                            buf.set_string(x + 3, y, mark, style.patch(bg));
+                            let ls = if sel { theme.heading() } else { theme.dim() };
+                            buf.set_stringn(
+                                x + 5,
+                                y,
+                                name,
+                                w.saturating_sub(7) as usize,
+                                ls.patch(bg),
+                            );
+                            hit.buttons.push((r, Action::LibrarySection(si)));
+                            y += 1;
                         }
-                        let r = Rect::new(area.x, y, area.width, 1);
-                        let style = if si == sec {
-                            theme.accent_bold()
-                        } else {
-                            theme.dim()
-                        }
-                        .patch(bg);
-                        let mark = if si == sec { "•" } else { " " };
-                        buf.set_stringn(
-                            x + 3,
-                            y,
-                            format!("{mark} {name}"),
-                            w.saturating_sub(4) as usize,
-                            style,
-                        );
-                        hit.buttons.push((r, Action::LibrarySection(si)));
-                        y += 1;
                     }
                 }
             }
+            y += 1;
         }
         let nav_end = y;
+        let rule_w = area.width.saturating_sub(4) as usize;
 
         // Footer: account + help hint.
         let mut footer: Vec<(String, Style, Option<Action>)> = Vec::new();
@@ -166,7 +204,10 @@ impl<'a> Sidebar<'a> {
         };
         footer.push((account, account_style, Some(Action::AccountMenu)));
         let footer_h = footer.len() as u16;
-        let footer_top = bottom.saturating_sub(footer_h + 1);
+        let footer_top = bottom.saturating_sub(footer_h + 2);
+        if footer_top > nav_end {
+            buf.set_string(x, footer_top, "─".repeat(rule_w), theme.rule().patch(bg));
+        }
         for (i, (text, style, action)) in footer.iter().rev().enumerate() {
             let fy = bottom - 2 - i as u16;
             if fy < nav_end {

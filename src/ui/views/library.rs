@@ -4,8 +4,12 @@ use crate::ui::theme::Theme;
 use crate::ui::widgets::track_list::{
     render_item_list, render_track_list, TrackListOpts, TrackListState,
 };
+use crate::art::Cover;
+use crate::api::model::ShelfItem;
+use crate::ui::cover::{CoverRenderer, CoverSlot};
 use crate::ui::HitMap;
 use ratatui::prelude::*;
+use std::collections::HashMap;
 
 pub const SECTIONS: &[&str] = &[
     "Liked songs",
@@ -32,6 +36,10 @@ pub fn render(
     list: &TrackListState,
     playing_id: Option<&str>,
     section_pills: bool,
+    covers: &HashMap<String, Cover>,
+    renderer: &CoverRenderer,
+    graphics: bool,
+    blocked: &[Rect],
     area: Rect,
     buf: &mut Buffer,
     theme: &Theme,
@@ -110,30 +118,18 @@ pub fn render(
             theme,
             Some(&mut hit.list_rows),
         ),
-        1 => {
-            let items: Vec<_> = data
-                .playlists
-                .iter()
-                .map(|p| {
-                    let sub = match (p.author.as_deref(), p.track_count) {
-                        (Some(a), Some(c)) => format!("{a} · {c} tracks"),
-                        (Some(a), None) => a.to_string(),
-                        (None, Some(c)) => format!("{c} tracks"),
-                        _ => String::new(),
-                    };
-                    (p.title.clone(), sub)
-                })
-                .collect();
-            render_item_list(
-                &items,
-                "≡",
-                list.selected,
-                body,
-                buf,
-                theme,
-                Some(&mut hit.list_rows),
-            );
-        }
+        1 => render_playlist_grid(
+            data.playlists,
+            list.selected,
+            covers,
+            renderer,
+            graphics,
+            blocked,
+            body,
+            buf,
+            theme,
+            hit,
+        ),
         2 => {
             let items: Vec<_> = data
                 .albums
@@ -189,5 +185,78 @@ pub fn artist_line(a: &Album) -> String {
         Some(y) if !artists.is_empty() => format!("{artists} · {y}"),
         Some(y) => y.clone(),
         None => artists,
+    }
+}
+
+/// Playlist covers laid out left→right, top→bottom; the row holding the
+/// selection is kept in view.
+#[allow(clippy::too_many_arguments)]
+fn render_playlist_grid(
+    playlists: &[Playlist],
+    selected: usize,
+    covers: &HashMap<String, Cover>,
+    renderer: &CoverRenderer,
+    graphics: bool,
+    blocked: &[Rect],
+    area: Rect,
+    buf: &mut Buffer,
+    theme: &Theme,
+    hit: &mut HitMap,
+) {
+    use crate::ui::views::home::{render_card, CARD_GAP};
+    // Same sizing as the Home cards (the header sits above this body).
+    let full_h = area.height + 2;
+    let art_h: u16 = if full_h >= 34 {
+        8
+    } else if full_h >= 24 {
+        6
+    } else if full_h >= 16 {
+        4
+    } else {
+        3
+    };
+    let card_w = renderer.width_for_rows(art_h).clamp(14, 22);
+    let card_h = art_h + 2;
+    let row_h = card_h + 1;
+    let cols = ((area.width + CARD_GAP) / (card_w + CARD_GAP)).max(1) as usize;
+    let rows_fit = ((area.height + 1) / row_h).max(1) as usize;
+    hit.grid_cols = cols;
+
+    let sel_row = selected / cols;
+    let first_row = sel_row.saturating_sub(rows_fit - 1);
+    let mut slot_i: u8 = 0;
+    for (ri, chunk) in playlists.chunks(cols).enumerate().skip(first_row).take(rows_fit) {
+        let y = area.y + (ri - first_row) as u16 * row_h;
+        let h = card_h.min((area.y + area.height).saturating_sub(y));
+        if h < 2 {
+            break;
+        }
+        for (ci, p) in chunk.iter().enumerate() {
+            let idx = ri * cols + ci;
+            let x = area.x + 1 + ci as u16 * (card_w + CARD_GAP);
+            if x + card_w > area.x + area.width {
+                break;
+            }
+            let card = Rect::new(x, y, card_w, h);
+            let item = ShelfItem::Playlist(Playlist {
+                tracks: Vec::new(),
+                ..p.clone()
+            });
+            render_card(
+                &item,
+                covers,
+                renderer,
+                graphics,
+                blocked,
+                CoverSlot::Home(slot_i),
+                card,
+                art_h,
+                idx == selected,
+                buf,
+                theme,
+            );
+            slot_i = slot_i.saturating_add(1);
+            hit.list_rows.push((card, idx));
+        }
     }
 }

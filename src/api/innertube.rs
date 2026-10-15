@@ -2,7 +2,6 @@ use crate::api::model::*;
 use crate::auth::{manual, sapisid, USER_AGENT};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -18,7 +17,7 @@ pub struct InnertubeClient {
     visitor_id: Arc<Mutex<Option<String>>>,
     user_session_id: Arc<Mutex<Option<String>>>,
     /// Set when a response rotated session cookies that have not been persisted yet.
-    cookies_dirty: Arc<AtomicBool>,
+    pending_cookie_updates: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl InnertubeClient {
@@ -33,7 +32,7 @@ impl InnertubeClient {
             cookies: Arc::new(Mutex::new(cookies)),
             visitor_id: Arc::new(Mutex::new(None)),
             user_session_id: Arc::new(Mutex::new(None)),
-            cookies_dirty: Arc::new(AtomicBool::new(false)),
+            pending_cookie_updates: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -51,13 +50,9 @@ impl InnertubeClient {
         self.set_auth_meta(session.visitor_id.clone(), session.user_session_id.clone());
     }
 
-    /// Returns the current cookie header once after Google rotated it, so it can be saved.
-    pub fn take_rotated_cookies(&self) -> Option<String> {
-        if self.cookies_dirty.swap(false, Ordering::SeqCst) {
-            self.cookies()
-        } else {
-            None
-        }
+    /// Cookie changes Google sent since the last call, to be merged into the saved session.
+    pub fn take_cookie_updates(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut *self.pending_cookie_updates.lock().unwrap())
     }
 
     pub fn cookies(&self) -> Option<String> {
@@ -140,7 +135,7 @@ impl InnertubeClient {
                 let merged = manual::merge_cookie_header(current, &updates);
                 if cookie_set(&merged) != cookie_set(current) {
                     *self.cookies.lock().unwrap() = Some(merged);
-                    self.cookies_dirty.store(true, Ordering::SeqCst);
+                    self.pending_cookie_updates.lock().unwrap().extend(updates);
                 }
             }
         }
@@ -223,7 +218,36 @@ impl InnertubeClient {
         let body = json!({ "browseId": "FEmusic_liked_playlists" });
         let json = self.post("browse", body).await?;
         self.require_signed_in(&json, "library playlists")?;
-        Ok(parse_library_playlists(&json))
+        let mut playlists = parse_library_playlists(&json);
+        // YouTube lists "Liked Music" with a generated icon or no artwork at all, so
+        // always use the cover of the most recently liked song instead.
+        let is_liked = |p: &Playlist| {
+            p.id == "LM" || p.id == "VLLM" || p.title.eq_ignore_ascii_case("liked music")
+        };
+        if playlists.iter().any(is_liked) {
+            if let Ok(resp) = self.post("browse", json!({ "browseId": "VLLM" })).await {
+                if let Ok(pl) = parse_playlist(&resp, "LM") {
+                    let thumbs = pl
+                        .tracks
+                        .iter()
+                        .find_map(|t| t.art_url())
+                        .map(|url| {
+                            vec![Thumbnail {
+                                url,
+                                width: Some(544),
+                                height: Some(544),
+                            }]
+                        })
+                        .or_else(|| (!pl.thumbnails.is_empty()).then(|| pl.thumbnails.clone()));
+                    if let Some(thumbs) = thumbs {
+                        for p in playlists.iter_mut().filter(|p| is_liked(p)) {
+                            p.thumbnails = thumbs.clone();
+                        }
+                    }
+                }
+            }
+        }
+        Ok(playlists)
     }
 
     pub async fn library_albums(&self) -> Result<Vec<Album>> {
@@ -878,7 +902,8 @@ fn parse_artist_runs(runs: &Value) -> Vec<ArtistRef> {
     arr.iter()
         .filter_map(|run| {
             let name = run.get("text")?.as_str()?.to_string();
-            if name.trim() == "•" || name.trim() == "&" || name.trim().is_empty() {
+            // separator runs such as ", " / " & " / " • " carry no artist
+            if name.trim().chars().all(|c| c.is_whitespace() || "•&,/·".contains(c)) {
                 return None;
             }
             // skip duration-like

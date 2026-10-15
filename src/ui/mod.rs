@@ -34,6 +34,8 @@ pub struct HitMap {
     pub list_rows: Vec<(Rect, usize)>,
     /// Home shelf cards → (shelf_idx, item_idx).
     pub home_cards: Vec<(Rect, usize, usize)>,
+    /// Columns in the Library playlist cover grid (0 when not shown).
+    pub grid_cols: usize,
     /// Regions where a click that hits nothing else should do nothing.
     pub inert: Vec<Rect>,
 }
@@ -102,6 +104,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             let in_tab = app.detail.is_none();
             Sidebar {
                 active_tab: in_tab.then_some(app.tab as usize),
+                focused: app.sidebar_focus,
                 library_section: (app.tab == Tab::Library && app.signed_in)
                     .then_some(app.library_section),
                 account: app.account_name.as_deref(),
@@ -269,6 +272,10 @@ fn draw_main(
                 &app.list_state,
                 playing_id,
                 !full_sidebar,
+                &app.covers,
+                &app.cover_ui,
+                graphics,
+                blocked,
                 area,
                 buf,
                 theme,

@@ -8,7 +8,7 @@ use ratatui::prelude::*;
 use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
-const CARD_GAP: u16 = 2;
+pub(crate) const CARD_GAP: u16 = 2;
 
 pub fn render(
     shelves: &[Shelf],
@@ -117,7 +117,7 @@ pub fn render(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_card(
+pub(crate) fn render_card(
     item: &ShelfItem,
     covers: &HashMap<String, Cover>,
     renderer: &CoverRenderer,

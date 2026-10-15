@@ -1,3 +1,7 @@
+// Several API surfaces (actions, player/queue helpers, auth utilities) are kept for
+// planned features; silence dead-code noise crate-wide.
+#![allow(dead_code)]
+
 mod action;
 mod api;
 mod app;
@@ -186,11 +190,24 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
                 player.restore_session(queue, idx, pos, shuffle, repeat);
                 if let Some(t) = player.current_track().cloned() {
                     let _ = event_tx_p.send(AppEvent::Player(action::PlayerEvent::Paused));
+                    let _ = event_tx_p.send(AppEvent::Player(action::PlayerEvent::Position(pos)));
                     let _ = event_tx_p.send(AppEvent::Info(format!(
-                        "Restored: {} (paused)",
+                        "Restored: {} (press space to continue)",
                         t.title
                     )));
                 }
+                // Push the restored queue to the UI now, so an immediate quit
+                // doesn't overwrite the saved session with an empty queue.
+                let tracks: Vec<_> = player
+                    .queue
+                    .tracks_in_play_order()
+                    .into_iter()
+                    .cloned()
+                    .collect();
+                let cursor = player.queue.cursor();
+                last_queue_len = tracks.len();
+                last_cursor = cursor;
+                let _ = event_tx_p.send(AppEvent::QueueSnapshot { tracks, cursor });
             }
         }
 
@@ -201,7 +218,7 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
                     player.play_tracks(tracks, start)
                 }
                 PlayerCommand::Toggle => player.toggle(),
-                PlayerCommand::Play => player.engine.send(player::engine::EngineCmd::Play),
+                PlayerCommand::Play => player.resume(),
                 PlayerCommand::Pause => player.engine.send(player::engine::EngineCmd::Pause),
                 PlayerCommand::Next => player.next(),
                 PlayerCommand::Previous => player.previous(),
@@ -367,14 +384,16 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
                 Err(e) => {
                     // Rotate the session's cookies like a browser would before giving up.
                     match auth::recover_session(paths_v.clone()).await {
-                        Some(session) => {
+                        auth::Recovery::Refreshed(session) => {
                             let _ = api_v.send(Command::ApplyAuth(session.clone()));
                             let _ = tx_v.send(AppEvent::AuthState(AuthStateEvent::SignedIn(session)));
                         }
-                        None => {
-                            let _ = tx_v.send(AppEvent::AuthState(AuthStateEvent::SessionExpired(
-                                e.to_string(),
-                            )));
+                        // Offline / YouTube hiccup: keep the saved session, never prompt.
+                        auth::Recovery::Transient(why) => {
+                            tracing::warn!("launch session check failed ({e}); keeping session: {why}");
+                        }
+                        auth::Recovery::Rejected(why) => {
+                            let _ = tx_v.send(AppEvent::AuthState(AuthStateEvent::SessionExpired(why)));
                         }
                     }
                 }

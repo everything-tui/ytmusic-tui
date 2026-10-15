@@ -1,10 +1,10 @@
 use crate::action::*;
 use crate::api::model::*;
-use crate::auth::{self, AuthService, AuthSession};
+use crate::auth::{self};
 use crate::config::Config;
 use crate::paths::Paths;
 use crate::player::queue::RepeatMode;
-use crate::player::{PlaybackState, PlayerService};
+use crate::player::PlaybackState;
 use crate::ui::keymap::{self, InputContext};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::toast::Toast;
@@ -20,7 +20,6 @@ use futures::StreamExt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tracing::info;
 
 /// Window in which a second Ctrl+C confirms quit.
 const CTRL_C_QUIT_WINDOW: Duration = Duration::from_secs(2);
@@ -129,6 +128,9 @@ pub struct App {
     pub loading_search: bool,
     /// When true, keys type into the search field; Esc clears this.
     pub search_editing: bool,
+    /// Keyboard focus is on the sidebar menu (↑/↓ switch tab, →/Enter/Esc leave).
+    pub sidebar_focus: bool,
+    pub term_w: u16,
 
     pub library_section: usize,
     pub liked_songs: Vec<Track>,
@@ -283,6 +285,8 @@ impl App {
             suggestion_idx: 0,
             loading_search: false,
             search_editing: false,
+            sidebar_focus: false,
+            term_w: crossterm::terminal::size().map(|s| s.0).unwrap_or(120),
             library_section: 0,
             liked_songs: Vec::new(),
             library_playlists: Vec::new(),
@@ -389,6 +393,39 @@ impl App {
                 video_id: key,
             });
         }
+    }
+
+    fn ensure_playlist_covers(&mut self, cmds: &mut Vec<Command>) {
+        let requests: Vec<(String, String)> = self
+            .library_playlists
+            .iter()
+            .filter(|p| !self.covers.contains_key(&p.id))
+            .filter_map(|p| {
+                let url = crate::api::model::ShelfItem::Playlist(crate::api::model::Playlist {
+                    tracks: Vec::new(),
+                    ..p.clone()
+                })
+                .art_url()?;
+                Some((p.id.clone(), url))
+            })
+            .take(80)
+            .collect();
+        for (key, url) in requests {
+            self.covers.insert(key.clone(), crate::art::Cover::default());
+            cmds.push(Command::FetchArt { url, video_id: key });
+        }
+    }
+
+    /// Library playlists are shown as a cover grid.
+    fn in_playlist_grid(&self) -> bool {
+        self.tab == Tab::Library
+            && self.detail.is_none()
+            && !self.fullscreen_np
+            && self.library_section == 1
+    }
+
+    fn grid_cols(&self) -> usize {
+        self.hit.borrow().grid_cols.max(1)
     }
 
     /// Adds a toast, refreshing an identical live one instead of stacking duplicates.
@@ -730,6 +767,32 @@ impl App {
             Overlay::None => {}
         }
 
+        if self.sidebar_focus {
+            match action {
+                Action::MoveUp | Action::MoveDown => {
+                    let n = 5usize;
+                    let i = self.tab as usize;
+                    let next = if matches!(action, Action::MoveUp) {
+                        (i + n - 1) % n
+                    } else {
+                        (i + 1) % n
+                    };
+                    self.tab = Tab::from_usize(next);
+                    self.detail = None;
+                    self.search_editing = false;
+                    self.on_tab_enter(&mut cmds);
+                    return cmds;
+                }
+                Action::MoveLeft => return cmds,
+                Action::MoveRight | Action::Select | Action::Back | Action::Escape => {
+                    self.sidebar_focus = false;
+                    self.search_editing = self.tab == Tab::Search && self.detail.is_none();
+                    return cmds;
+                }
+                _ => {}
+            }
+        }
+
         // Global actions
         match action {
             Action::Quit => {
@@ -754,6 +817,7 @@ impl App {
                 };
             }
             Action::Tab(i) => {
+                self.sidebar_focus = false;
                 self.tab = Tab::from_usize(i);
                 self.detail = None;
                 self.search_editing = self.tab == Tab::Search;
@@ -1047,7 +1111,7 @@ impl App {
             Action::ToastDismiss => {
                 self.toasts.clear();
             }
-            Action::Resize(_, _) => {}
+            Action::Resize(w, _) => self.term_w = w,
             _ => {}
         }
         cmds
@@ -1347,27 +1411,56 @@ impl App {
                         self.home_item_idx += 1;
                     }
                 } else {
-                    self.home_item_idx = self.home_item_idx.saturating_sub(1);
+                    if self.home_item_idx == 0 {
+                        self.focus_sidebar();
+                        return;
+                    }
+                    self.home_item_idx -= 1;
                 }
                 self.ensure_home_covers(cmds);
             }
+            Tab::Library if browsing && self.library_section == 1 && self.list_len() > 0 => {
+                let sel = self.list_state.selected;
+                if right {
+                    if sel + 1 < self.list_len() {
+                        self.list_state.selected = sel + 1;
+                    }
+                } else if sel % self.grid_cols() == 0 {
+                    self.focus_sidebar();
+                } else {
+                    self.list_state.selected = sel - 1;
+                }
+            }
             Tab::Library if browsing => {
                 let n = crate::ui::views::library::SECTIONS.len();
+                if !right && self.library_section == 0 {
+                    self.focus_sidebar();
+                    return;
+                }
                 let next = if right {
                     (self.library_section + 1) % n
                 } else {
-                    (self.library_section + n - 1) % n
+                    self.library_section - 1
                 };
                 self.library_section = next;
                 self.list_state = TrackListState::default();
                 self.load_library_section(cmds);
             }
+            _ if !right => self.focus_sidebar(),
             _ => {
-                let _ = self
-                    .player_cmd_tx
-                    .send(PlayerCommand::SeekRelative(if right { 5 } else { -5 }));
+                let _ = self.player_cmd_tx.send(PlayerCommand::SeekRelative(5));
             }
         }
+    }
+
+    /// Move keyboard focus to the sidebar menu (no-op when it isn't visible).
+    fn focus_sidebar(&mut self) {
+        if crate::ui::widgets::sidebar::width_for(self.term_w) == 0 {
+            let _ = self.player_cmd_tx.send(PlayerCommand::SeekRelative(-5));
+            return;
+        }
+        self.sidebar_focus = true;
+        self.search_editing = false;
     }
 
     fn move_sel(&mut self, delta: i32, cmds: &mut Vec<Command>) {
@@ -1381,10 +1474,22 @@ impl App {
             self.ensure_home_covers(cmds);
             return;
         }
-        if self.tab == Tab::Library && self.detail.is_none() {
-            // If at left edge conceptually, change section with h/l — for up/down move list
-        }
         let len = self.list_len();
+        if self.in_playlist_grid() {
+            let cols = self.grid_cols();
+            let sel = self.list_state.selected;
+            if delta < 0 {
+                if sel >= cols {
+                    self.list_state.selected = sel - cols;
+                }
+            } else if sel + cols < len {
+                self.list_state.selected = sel + cols;
+            } else if sel / cols < (len.saturating_sub(1)) / cols {
+                // Last (short) row: land on its final card.
+                self.list_state.selected = len - 1;
+            }
+            return;
+        }
         if delta < 0 {
             self.list_state.select_prev();
         } else {
@@ -1735,6 +1840,7 @@ impl App {
                 self.loading_library = false;
                 self.library_fetched[1] = true;
                 self.library_playlists = p;
+                self.ensure_playlist_covers(&mut cmds);
             }
             AppEvent::LikedSongs(t) => {
                 self.loading_library = false;
@@ -1813,8 +1919,20 @@ impl App {
                     self.playback_state,
                     PlaybackState::Loading | PlaybackState::Buffering
                 ) {
-                    if let Some(t) = self.queue.get(cursor) {
+                    if let Some(t) = self.queue.get(cursor).cloned() {
+                        let changed = self.current.as_ref().map(|c| c.video_id.as_str())
+                            != Some(t.video_id.as_str());
                         self.current = Some(t.clone());
+                        // A restored session never goes through Loading, so
+                        // fetch its cover and lyrics here.
+                        if changed {
+                            self.ensure_track_art(&t, &mut cmds);
+                            cmds.push(Command::LoadLyrics {
+                                video_id: t.video_id.clone(),
+                                browse_id: None,
+                                track: t,
+                            });
+                        }
                     }
                 }
             }

@@ -1,7 +1,6 @@
 pub mod manual;
 pub mod sapisid;
 
-use crate::action::{AppEvent, AuthStateEvent};
 use crate::api::model::Account;
 use crate::paths::Paths;
 use anyhow::{Context, Result};
@@ -88,15 +87,6 @@ impl AuthService {
         Ok(())
     }
 
-    /// Persist cookies Google rotated during normal use, keeping the saved session alive.
-    pub fn update_cookies(&mut self, cookies: String) -> Result<()> {
-        let Some(mut session) = self.session.clone() else {
-            return Ok(());
-        };
-        session.cookies = cookies;
-        self.save_session(session)
-    }
-
     pub fn logout(&mut self) -> Result<()> {
         let path = self.paths.auth_file();
         if path.exists() {
@@ -106,6 +96,30 @@ impl AuthService {
         self.session = None;
         Ok(())
     }
+}
+
+/// Serialises read-modify-write of the saved session so the keepalive task, API responses and
+/// manual logins can never overwrite each other's freshly rotated cookies.
+static SESSION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Merges cookie changes (name, value) into the *currently saved* session and returns it.
+/// Only the changed cookies are applied, so a stale in-memory jar can never roll back a
+/// newer `__Secure-1PSIDTS` that another task already saved.
+pub fn apply_cookie_updates(
+    paths: Arc<Paths>,
+    updates: &[(String, String)],
+) -> Result<Option<AuthSession>> {
+    if updates.is_empty() {
+        return Ok(None);
+    }
+    let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut svc = AuthService::new(paths);
+    let Some(mut session) = svc.session.clone() else {
+        return Ok(None);
+    };
+    session.cookies = manual::merge_cookie_header(&session.cookies, updates);
+    svc.save_session(session.clone())?;
+    Ok(Some(session))
 }
 
 pub async fn validate_and_save(
@@ -134,8 +148,11 @@ pub async fn validate_and_save_with_visitor(
         visitor_id,
         user_session_id,
     };
-    let mut svc = AuthService::new(paths);
-    svc.save_session(session.clone())?;
+    {
+        let _guard = SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut svc = AuthService::new(paths);
+        svc.save_session(session.clone())?;
+    }
     Ok(session)
 }
 
@@ -413,8 +430,8 @@ mod tests {
 const ROTATE_URL: &str = "https://accounts.google.com/RotateCookies";
 
 /// Asks Google to rotate the short-lived session cookies, exactly as a browser tab does in
-/// the background. Returns the new cookie header, or `None` when nothing changed.
-pub async fn rotate_cookies(cookies: &str) -> Result<Option<String>> {
+/// the background. Returns the cookies Google (re)set; empty when nothing changed.
+pub async fn rotate_cookies(cookies: &str) -> Result<Vec<(String, String)>> {
     let client = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(std::time::Duration::from_secs(20))
@@ -436,10 +453,7 @@ pub async fn rotate_cookies(cookies: &str) -> Result<Option<String>> {
             updates.push(pair);
         }
     }
-    if updates.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(manual::merge_cookie_header(cookies, &updates)))
+    Ok(updates)
 }
 
 /// Keeps the saved session alive on its own: rotates cookies shortly after launch and then
@@ -451,28 +465,10 @@ pub async fn keepalive_loop(
     let mut wait = std::time::Duration::from_secs(5);
     loop {
         tokio::time::sleep(wait).await;
-        wait = std::time::Duration::from_secs(15 * 60);
-        let p = paths.clone();
-        let Some(session) = tokio::task::spawn_blocking(move || {
-            AuthService::new(p).session().cloned()
-        })
-        .await
-        .ok()
-        .flatten() else {
-            continue;
-        };
-        match rotate_cookies(&session.cookies).await {
-            Ok(Some(cookies)) => {
-                let p = paths.clone();
-                let mut updated = session.clone();
-                updated.cookies = cookies;
-                let saved = updated.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    let mut svc = AuthService::new(p);
-                    svc.save_session(saved)
-                })
-                .await;
-                let _ = api.send(crate::action::Command::ApplyAuth(updated));
+        wait = std::time::Duration::from_secs(10 * 60);
+        match rotate_saved_session(paths.clone()).await {
+            Ok(Some(session)) => {
+                let _ = api.send(crate::action::Command::ApplyAuth(session));
                 info!("session cookies rotated");
             }
             Ok(None) => {}
@@ -481,19 +477,51 @@ pub async fn keepalive_loop(
     }
 }
 
-/// Tries to revive the saved session without any user input: rotates its cookies the way a
-/// browser would and re-validates. Returns the refreshed session when YouTube accepts it.
-pub async fn recover_session(paths: Arc<Paths>) -> Option<AuthSession> {
+/// Rotates the saved session's cookies and persists the result. `None` = nothing to do.
+async fn rotate_saved_session(paths: Arc<Paths>) -> Result<Option<AuthSession>> {
     let p = paths.clone();
-    let session = tokio::task::spawn_blocking(move || AuthService::new(p).session().cloned())
+    let Some(session) =
+        tokio::task::spawn_blocking(move || AuthService::new(p).session().cloned()).await?
+    else {
+        return Ok(None);
+    };
+    let updates = rotate_cookies(&session.cookies).await?;
+    tokio::task::spawn_blocking(move || apply_cookie_updates(paths, &updates)).await?
+}
+
+/// Outcome of trying to revive the saved session without user input.
+pub enum Recovery {
+    Refreshed(AuthSession),
+    /// Network / server trouble: the session may still be fine, so do not ask for cookies.
+    Transient(String),
+    /// YouTube definitively treats the session as signed out.
+    Rejected(String),
+}
+
+/// Whether a validation failure means the session is really dead (as opposed to the
+/// network being down or YouTube returning a hiccup).
+fn is_definitive_rejection(e: &anyhow::Error) -> bool {
+    let m = format!("{e:#}");
+    m.contains("signed out") || m.contains("HTTP 401") || m.contains("HTTP 403")
+        || m.contains("missing SAPISID")
+}
+
+/// Tries to revive the saved session without any user input: rotates its cookies the way a
+/// browser would and re-validates.
+pub async fn recover_session(paths: Arc<Paths>) -> Recovery {
+    let p = paths.clone();
+    let session = match tokio::task::spawn_blocking(move || AuthService::new(p).session().cloned())
         .await
-        .ok()
-        .flatten()?;
-    let cookies = match rotate_cookies(&session.cookies).await {
-        Ok(Some(c)) => c,
+    {
+        Ok(Some(s)) => s,
+        _ => return Recovery::Rejected("no saved session".into()),
+    };
+    // A failed rotation (e.g. 401) is not fatal: the old cookies may still be accepted.
+    let cookies = match rotate_saved_session(paths.clone()).await {
+        Ok(Some(updated)) => updated.cookies,
         _ => session.cookies.clone(),
     };
-    validate_and_save_with_visitor(
+    match validate_and_save_with_visitor(
         paths,
         cookies,
         session.browser,
@@ -501,5 +529,9 @@ pub async fn recover_session(paths: Arc<Paths>) -> Option<AuthSession> {
         session.visitor_id,
     )
     .await
-    .ok()
+    {
+        Ok(s) => Recovery::Refreshed(s),
+        Err(e) if is_definitive_rejection(&e) => Recovery::Rejected(e.to_string()),
+        Err(e) => Recovery::Transient(e.to_string()),
+    }
 }

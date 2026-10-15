@@ -5,11 +5,11 @@ pub mod ytmapi;
 use crate::action::{AppEvent, AuthStateEvent, Command, SearchFilter};
 use crate::api::innertube::InnertubeClient;
 use crate::api::model::*;
-use crate::auth::{AuthService, AuthSession};
+use crate::auth::AuthSession;
 use crate::paths::Paths;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -85,40 +85,43 @@ impl ApiService {
             }
             r.running = true;
         }
-        let recovered = self.recover_session().await;
+        let recovered = crate::auth::recover_session(self.paths.clone()).await;
         {
             let mut r = self.recovery.lock().unwrap();
             r.running = false;
-            if recovered.is_some() {
+            if matches!(recovered, crate::auth::Recovery::Refreshed(_)) {
                 r.last_ok = Some(Instant::now());
             }
         }
         match recovered {
-            Some(session) => {
+            crate::auth::Recovery::Refreshed(session) => {
                 self.client.apply_session(&session);
                 let _ = self.tx.send(AppEvent::AuthState(AuthStateEvent::SignedIn(session)));
             }
-            None => {
+            crate::auth::Recovery::Transient(e) => {
+                warn!("session check failed, keeping saved session: {e}");
+                let _ = self.tx.send(AppEvent::Error(
+                    "Could not reach YouTube to refresh the session — will retry".into(),
+                ));
+            }
+            crate::auth::Recovery::Rejected(_) => {
                 let _ = self.tx.send(AppEvent::AuthState(AuthStateEvent::SessionExpired(msg)));
             }
         }
     }
 
-    async fn recover_session(&self) -> Option<AuthSession> {
-        crate::auth::recover_session(self.paths.clone()).await
-    }
-
-    /// Saves session cookies Google rotated since the last call.
+    /// Saves session cookie changes Google sent since the last call.
     fn persist_rotated_cookies(&self) {
-        if let Some(cookies) = self.client.take_rotated_cookies() {
-            let paths = self.paths.clone();
-            tokio::task::spawn_blocking(move || {
-                let mut svc = AuthService::new(paths);
-                if let Err(e) = svc.update_cookies(cookies) {
-                    warn!("could not persist rotated cookies: {e}");
-                }
-            });
+        let updates = self.client.take_cookie_updates();
+        if updates.is_empty() {
+            return;
         }
+        let paths = self.paths.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = crate::auth::apply_cookie_updates(paths, &updates) {
+                warn!("could not persist rotated cookies: {e}");
+            }
+        });
     }
 
     pub async fn handle(&mut self, cmd: Command) {
