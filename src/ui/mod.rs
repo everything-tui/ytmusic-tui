@@ -669,6 +669,31 @@ mod tests {
     }
 
     #[test]
+    fn page_keys_jump_ten_songs_in_a_playlist() {
+        let mut app = test_app();
+        app.tab = Tab::Library;
+        app.detail = Some(DetailView::Playlist(crate::api::model::Playlist {
+            id: "PL1".into(),
+            title: "Playlist".into(),
+            description: None,
+            author: None,
+            track_count: Some(25),
+            thumbnails: vec![],
+            tracks: (0..25).map(track).collect(),
+        }));
+        app.update(Action::PageDown);
+        assert_eq!(app.list_state.selected, 10);
+        app.update(Action::PageDown);
+        assert_eq!(app.list_state.selected, 20);
+        app.update(Action::PageDown);
+        assert_eq!(app.list_state.selected, 24, "clamped to the last song");
+        app.update(Action::PageUp);
+        assert_eq!(app.list_state.selected, 14);
+        let out = render(&app, 120, 36);
+        assert!(out.contains("Song number 14"), "selection stays on screen:\n{out}");
+    }
+
+    #[test]
     fn detail_and_overlays_render() {
         let mut app = test_app();
         app.detail = Some(DetailView::Album(crate::api::model::Album {

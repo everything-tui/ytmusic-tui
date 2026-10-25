@@ -218,6 +218,7 @@ Navigation
   Tab / f         Full-screen Now Playing
   /               Search
   ↑↓←→ / hjkl     Move
+  PgUp / PgDn     Jump 10 songs (fn+↑ / fn+↓ on Mac)
   g / G           Top / Bottom
   Enter           Play / Open
   Esc / Backspace Back
