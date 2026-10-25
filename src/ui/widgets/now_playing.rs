@@ -44,17 +44,11 @@ impl<'a> NowPlayingBar<'a> {
         let theme = self.theme;
         fill(buf, area, Style::default().bg(theme.bg_player));
         hit.player = Some(area);
-        // Thin accent line separates the player from the content above.
-        for x in 0..area.width {
-            if let Some(cell) = buf.cell_mut((area.x + x, area.y)) {
-                cell.set_symbol("▁").set_fg(theme.accent).set_bg(theme.bg_player);
-            }
-        }
         if area.height < 2 || area.width < 30 {
             return;
         }
 
-        // Row 0 is the divider; keep one blank row below it before the content.
+        // Row 0 is breathing room against the content; keep one blank row below it too.
         let inner_h = area.height - 1;
         let pad = u16::from(inner_h >= 3);
         let avail = inner_h - pad;
@@ -234,7 +228,7 @@ mod tests {
             liked: Some(true),
             from_radio: false,
         };
-        let theme = Theme::new("#ff0033", false);
+        let theme = Theme::preset("midnight", false);
         let viz = Visualizer::new(VisualizerStyle::from_config("bars"));
         let marquee = Marquee::new("Blinding Lights");
         let px = ArtPixels {

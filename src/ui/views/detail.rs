@@ -89,7 +89,7 @@ pub fn render(
             let y = ty + 3;
             let actions = [
                 ("▶ Play", Action::PlayAll, true),
-                ("◉ Radio", Action::StartRadio, false),
+                ("Radio", Action::StartRadio, false),
             ];
             for (lbl, action, primary) in actions {
                 let w = lbl.width() as u16 + 2;

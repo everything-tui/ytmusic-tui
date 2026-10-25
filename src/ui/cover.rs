@@ -2,35 +2,122 @@ use crate::art::Cover;
 use crate::ui::icons::{self, Icon};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::player_parts::render_art;
+use image::DynamicImage;
 use ratatui::prelude::*;
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{FilterType, Resize, StatefulImage};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
 
-/// Each place a cover is drawn keeps its own encoded protocol so moving between
-/// sizes doesn't thrash a single cache.
+/// Where a cover is drawn. Encoded images are cached per (slot, cover), since each slot
+/// has its own size; all cards (Home shelves, Library grid) share one size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CoverSlot {
     Sidebar,
     Player,
     Fullscreen,
     Detail,
-    /// Visible Home shelf card; index is stable for the current frame only.
-    Home(u8),
+    Card,
 }
 
-struct SlotState {
-    key: String,
-    proto: StatefulProtocol,
+/// Encoded covers kept around so scrolling back or switching tabs shows them instantly.
+const CACHE_CAP: usize = 40;
+const ENCODE_WORKERS: usize = 2;
+
+type CacheKey = (CoverSlot, String);
+
+enum Entry {
+    /// A worker is resizing/encoding; half-blocks show until it is back.
+    Pending,
+    Ready(StatefulProtocol),
+}
+
+struct Cached {
+    entry: Entry,
+    used: u64,
+}
+
+enum Job {
+    /// Build the protocol from scratch: hashing and compositing the source is itself costly.
+    Create { key: CacheKey, image: Arc<DynamicImage>, area: Rect },
+    Resize { key: CacheKey, proto: StatefulProtocol, area: Rect },
+}
+
+/// Background resize+encode so drawing never blocks on image work.
+struct Encoder {
+    jobs: mpsc::Sender<Job>,
+    done: Mutex<mpsc::Receiver<(CacheKey, StatefulProtocol)>>,
+    wake: Arc<Notify>,
+}
+
+fn resize_mode() -> Resize {
+    Resize::Scale(Some(FilterType::CatmullRom))
+}
+
+impl Encoder {
+    fn spawn(picker: Picker) -> Self {
+        let (jobs, job_rx) = mpsc::channel::<Job>();
+        let (done_tx, done) = mpsc::channel();
+        let job_rx = Arc::new(Mutex::new(job_rx));
+        let wake = Arc::new(Notify::new());
+        for i in 0..ENCODE_WORKERS {
+            let job_rx = job_rx.clone();
+            let done_tx = done_tx.clone();
+            let wake = wake.clone();
+            let _ = std::thread::Builder::new()
+                .name(format!("cover-encode-{i}"))
+                .spawn(move || loop {
+                    let job = match job_rx.lock() {
+                        Ok(rx) => rx.recv(),
+                        Err(_) => return,
+                    };
+                    let Ok(job) = job else { return };
+                    let (key, mut proto, area) = match job {
+                        Job::Create { key, image, area } => {
+                            let image = shrink_for(&picker, key.0, &image, area);
+                            (key, picker.new_resize_protocol(image), area)
+                        }
+                        Job::Resize { key, proto, area } => (key, proto, area),
+                    };
+                    let bg = proto.background_color();
+                    proto.resize_encode(&resize_mode(), bg, area);
+                    if done_tx.send((key, proto)).is_err() {
+                        return;
+                    }
+                    wake.notify_one();
+                });
+        }
+        Self {
+            jobs,
+            done: Mutex::new(done),
+            wake,
+        }
+    }
+}
+
+/// Cards never change size with the window, so their source can be shrunk to what is shown,
+/// which keeps the cache small. Other slots keep full resolution for later resizes.
+fn shrink_for(picker: &Picker, slot: CoverSlot, image: &DynamicImage, area: Rect) -> DynamicImage {
+    let (fw, fh) = picker.font_size();
+    let px = (area.width as u32 * fw as u32).max(area.height as u32 * fh as u32);
+    if slot == CoverSlot::Card && px > 0 && image.width() > px {
+        image.resize(px, px, image::imageops::FilterType::Triangle)
+    } else {
+        image.clone()
+    }
 }
 
 pub struct CoverRenderer {
     /// `None` means half-blocks only.
     picker: Option<Picker>,
     disabled: bool,
-    slots: RefCell<HashMap<CoverSlot, SlotState>>,
+    encoder: Option<Encoder>,
+    cache: RefCell<HashMap<CacheKey, Cached>>,
+    uses: Cell<u64>,
     icons: RefCell<HashMap<String, StatefulProtocol>>,
 }
 
@@ -45,7 +132,9 @@ impl CoverRenderer {
         Self {
             picker: None,
             disabled: false,
-            slots: RefCell::new(HashMap::new()),
+            encoder: None,
+            cache: RefCell::new(HashMap::new()),
+            uses: Cell::new(0),
             icons: RefCell::new(HashMap::new()),
         }
     }
@@ -91,10 +180,14 @@ impl CoverRenderer {
         );
         Self {
             picker,
-            disabled: false,
-            slots: RefCell::new(HashMap::new()),
-            icons: RefCell::new(HashMap::new()),
+            encoder: picker.map(Encoder::spawn),
+            ..Self::halfblocks()
         }
+    }
+
+    /// Fires whenever a background-encoded cover is ready to be drawn.
+    pub fn wake_handle(&self) -> Option<Arc<Notify>> {
+        self.encoder.as_ref().map(|e| e.wake.clone())
     }
 
     /// True when scalable control icons can be drawn as real images.
@@ -118,7 +211,7 @@ impl CoverRenderer {
         if r.width == 0 || r.height == 0 {
             return false;
         }
-        let key = format!("{icon:?}-{}-{}-{}", fg.0, fg.1, fg.2);
+        let key = format!("{icon:?}-{fg:?}-{bg:?}");
         let mut map = self.icons.borrow_mut();
         if map.len() > 96 {
             map.clear();
@@ -186,32 +279,71 @@ impl CoverRenderer {
         }
         // Always paint half-blocks first. Kitty/iTerm protocols are detected in
         // many hosts (including Cursor) that don't actually composite images, so
-        // a graphics-only path left covers blank.
+        // a graphics-only path left covers blank. They also stand in while encoding.
         render_art(buf, r, cover.and_then(|c| c.pixels.as_deref()), theme);
-        if let (true, Some(picker), Some(key), Some(image)) = (
+        if let (true, Some(encoder), Some(key), Some(image)) = (
             graphics_ok,
-            self.picker.as_ref(),
+            self.encoder.as_ref(),
             key,
             cover.and_then(|c| c.image.as_ref()),
         ) {
-            let mut slots = self.slots.borrow_mut();
-            let stale = slots.get(&slot).is_none_or(|s| s.key != key);
-            if stale {
-                slots.insert(
-                    slot,
-                    SlotState {
-                        key: key.to_string(),
-                        proto: picker.new_resize_protocol((**image).clone()),
-                    },
-                );
+            self.collect_encoded(encoder);
+            let use_no = self.uses.get() + 1;
+            self.uses.set(use_no);
+            let mut cache = self.cache.borrow_mut();
+            let ck = (slot, key.to_string());
+            let cached = cache.entry(ck.clone()).or_insert_with(|| {
+                let _ = encoder.jobs.send(Job::Create {
+                    key: ck.clone(),
+                    image: image.clone(),
+                    area: r,
+                });
+                Cached { entry: Entry::Pending, used: use_no }
+            });
+            cached.used = use_no;
+            if let Entry::Ready(proto) = &mut cached.entry {
+                match proto.needs_resize(&resize_mode(), r) {
+                    // Window or layout changed size: re-encode off-thread, half-blocks meanwhile.
+                    Some(target) => {
+                        if let Entry::Ready(proto) =
+                            std::mem::replace(&mut cached.entry, Entry::Pending)
+                        {
+                            let _ = encoder.jobs.send(Job::Resize { key: ck, proto, area: target });
+                        }
+                    }
+                    None => proto.render(r, buf),
+                }
             }
-            if let Some(state) = slots.get_mut(&slot) {
-                StatefulImage::default()
-                    .resize(Resize::Scale(Some(FilterType::CatmullRom)))
-                    .render(r, buf, &mut state.proto);
-            }
+            evict(&mut cache);
         }
         r
+    }
+
+    /// Moves finished encodes into the cache.
+    fn collect_encoded(&self, encoder: &Encoder) {
+        let Ok(done) = encoder.done.lock() else { return };
+        let mut cache = self.cache.borrow_mut();
+        while let Ok((key, proto)) = done.try_recv() {
+            let used = cache.get(&key).map_or(0, |c| c.used);
+            cache.insert(key, Cached { entry: Entry::Ready(proto), used });
+        }
+    }
+}
+
+/// Drops the least recently drawn finished covers beyond the cap.
+fn evict(cache: &mut HashMap<CacheKey, Cached>) {
+    while cache.len() > CACHE_CAP {
+        let oldest = cache
+            .iter()
+            .filter(|(_, c)| matches!(c.entry, Entry::Ready(_)))
+            .min_by_key(|(_, c)| c.used)
+            .map(|(k, _)| k.clone());
+        match oldest {
+            Some(k) => {
+                cache.remove(&k);
+            }
+            None => break,
+        }
     }
 }
 

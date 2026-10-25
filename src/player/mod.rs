@@ -17,7 +17,7 @@ use crate::player::download::Downloader;
 use crate::player::engine::{EngineCmd, EngineHandle};
 use crate::player::queue::{PreviousResult, Queue, RepeatMode};
 use crate::player::resolver::Resolver;
-use crate::player::source::GrowingFile;
+use crate::player::source::{open_decoder_resilient, CancelToken, GrowingFile, SymphoniaSource};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,6 +51,8 @@ pub struct PlayerService {
     /// Bumped on every new play request so in-flight resolve/download tasks
     /// can bail before calling `EngineCmd::Load` (avoids playing a stale track).
     play_epoch: Arc<AtomicU64>,
+    /// Cancels the current load/stream so readers blocked on its download let go.
+    cancel: CancelToken,
     /// A restored session is loaded paused with nothing in the engine yet;
     /// the first play starts the track at `position`.
     restored_pending: bool,
@@ -97,6 +99,7 @@ impl PlayerService {
             paths,
             current: None,
             play_epoch: Arc::new(AtomicU64::new(0)),
+            cancel: CancelToken::default(),
             restored_pending: false,
         }
     }
@@ -154,14 +157,19 @@ impl PlayerService {
             return;
         };
         self.restored_pending = false;
-        let epoch = self.play_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        let epoch = self.supersede();
+        let cancel = self.cancel.clone();
         // Cut the previous stream immediately so a slow resolve can't keep
         // playing a song the user already navigated away from.
-        self.engine.send(EngineCmd::Stop);
+        self.engine.send(EngineCmd::Unload);
         self.current = Some(track.clone());
         self.state = PlaybackState::Loading;
         self.position = start;
         self.duration = track.duration;
+        // Show the new track right away, not only once its audio is ready.
+        let _ = self.event_tx.send(AppEvent::Player(PlayerEvent::Loading {
+            track: track.clone(),
+        }));
 
         let next = self
             .queue
@@ -229,11 +237,47 @@ impl PlayerService {
                 return;
             }
 
+            // Probing blocks until enough of the download has arrived.
+            let opened = {
+                let cancel = cancel.clone();
+                tokio::task::spawn_blocking(move || open_source(file, &cancel)).await
+            };
+            if play_epoch.load(Ordering::SeqCst) != epoch {
+                return;
+            }
+            let (file, source) = match opened {
+                Ok(Ok(opened)) => opened,
+                Ok(Err(e)) => {
+                    // #region agent log
+                    crate::debug_log::log(
+                        "E",
+                        "player/mod.rs:start_current",
+                        "decoder failed",
+                        serde_json::json!({
+                            "title": title,
+                            "video_id": video_id,
+                            "error": e.to_string(),
+                        }),
+                    );
+                    // #endregion
+                    let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
+                        "Couldn't play {title}: {e}"
+                    ))));
+                    return;
+                }
+                Err(e) => {
+                    warn!("open decoder task: {e}");
+                    return;
+                }
+            };
+
             let _ = engine_tx.send(EngineCmd::Load {
                 track,
                 file,
+                source,
                 start,
                 volume,
+                cancel,
             });
 
             let downloader2 = downloader.clone();
@@ -245,6 +289,14 @@ impl PlayerService {
                 prefetch_track(next, resolver, downloader);
             }
         });
+    }
+
+    /// Abandon whatever is loading or playing: in-flight tasks see a new epoch,
+    /// and readers blocked on a stalled download give up.
+    fn supersede(&mut self) -> u64 {
+        self.cancel.cancel();
+        self.cancel = CancelToken::default();
+        self.play_epoch.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     /// Resume playback; starts a restored session's track at its saved position.
@@ -285,10 +337,10 @@ impl PlayerService {
         if self.queue.next().is_some() {
             self.start_current(Duration::ZERO);
         } else {
+            self.supersede();
             self.engine.send(EngineCmd::Stop);
             self.state = PlaybackState::Stopped;
             self.current = None;
-            self.play_epoch.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -373,9 +425,9 @@ impl PlayerService {
         if self.queue.advance_on_end().is_some() {
             self.start_current(Duration::ZERO);
         } else {
+            self.supersede();
             self.state = PlaybackState::Stopped;
             self.current = None;
-            self.play_epoch.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -568,6 +620,33 @@ async fn resolve_download(
         }
     }
     None
+}
+
+/// Open a decoder for `file`, falling back to the finished cache file if the
+/// download was renamed out from under the first attempt.
+fn open_source(
+    file: Arc<GrowingFile>,
+    cancel: &CancelToken,
+) -> anyhow::Result<(Arc<GrowingFile>, SymphoniaSource)> {
+    let err = match open_decoder_resilient(file.clone(), cancel) {
+        Ok(source) => return Ok((file, source)),
+        Err(e) => e,
+    };
+    if cancel.is_cancelled() {
+        return Err(err);
+    }
+    let recovered = std::path::PathBuf::from(
+        file.path()
+            .to_string_lossy()
+            .trim_end_matches(".part")
+            .to_string(),
+    );
+    if !recovered.exists() {
+        return Err(err);
+    }
+    let file = GrowingFile::open_complete(&recovered)?;
+    let source = open_decoder_resilient(file.clone(), cancel)?;
+    Ok((file, source))
 }
 
 fn prefetch_track(track: Track, resolver: Resolver, downloader: Downloader) {

@@ -4,8 +4,9 @@ use crate::art::ArtPixels;
 use crate::player::queue::RepeatMode;
 use crate::player::PlaybackState;
 use crate::ui::cover::CoverCtx;
+use crate::ui::glyphs::{glyph, Glyph};
 use crate::ui::icons::Icon;
-use crate::ui::theme::Theme;
+use crate::ui::theme::{rgb_of, Theme};
 use ratatui::prelude::*;
 use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
@@ -59,7 +60,7 @@ pub fn render_art_placeholder(buf: &mut Buffer, r: Rect, theme: &Theme) {
     buf.set_string(x, y, note, Style::default().fg(theme.text_muted).bg(theme.bg_selected));
 }
 
-/// `0:42  ████████████▒▒▒▒▒▒▒▒  3:20` — block-fill progress bar; returns the bar rect for click-to-seek.
+/// `0:42  ━━━━━━━━●───────  3:20` — slim progress line with a playhead knob; returns the bar rect for click-to-seek.
 pub fn render_progress(
     buf: &mut Buffer,
     area: Rect,
@@ -98,13 +99,17 @@ pub fn render_progress(
     };
     let filled = ((bar.width as f64 * ratio).round() as u16).min(bar.width);
     let loading = matches!(state, PlaybackState::Loading | PlaybackState::Buffering);
+    // Knob marks the playhead once playback has started.
+    let knob = (!loading && !duration.is_zero()).then(|| filled.min(bar.width - 1));
     for i in 0..bar.width {
         let (sym, color) = if loading {
-            ("▒", theme.text_muted)
+            ("─", theme.text_muted)
+        } else if knob == Some(i) {
+            ("●", theme.text)
         } else if i < filled {
-            ("█", theme.accent)
+            ("━", theme.accent)
         } else {
-            ("▒", theme.bg_selected)
+            ("─", theme.faint)
         };
         buf.set_string(bar.x + i, bar.y, sym, Style::default().fg(color));
     }
@@ -193,7 +198,9 @@ pub fn render_controls(
     let mut x = area.x + area.width.saturating_sub(total_at(cut)) / 2;
     let top = area.y + (area.height - rows) / 2;
     let mid = area.y + (area.height - 1) / 2;
-    let bg = rgb_of(theme.bg_player, (24, 24, 24));
+    // Icons are opaque images: match whatever background the caller painted here.
+    let under = buf.cell((area.x, area.y)).map(|c| c.bg).unwrap_or(theme.bg_player);
+    let bg = rgb_of(if under == Color::Reset { theme.bg_player } else { under }, (24, 24, 24));
     let mut hits = Vec::new();
     for (icon, glyph, style, action) in buttons {
         let is_play = matches!(action, Action::PlayPause);
@@ -221,23 +228,7 @@ pub fn render_controls(
     hits
 }
 
-fn rgb_of(c: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
-    match c {
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Indexed(n) if n >= 232 => {
-            let v = 8 + 10 * (n - 232);
-            (v, v, v)
-        }
-        Color::Indexed(n) if n >= 16 => {
-            let n = n - 16;
-            let lv = |i: u8| if i == 0 { 0 } else { 55 + 40 * i };
-            (lv(n / 36), lv((n / 6) % 6), lv(n % 6))
-        }
-        _ => fallback,
-    }
-}
-
-/// `♫ ██████████░░░░ 65%` — icon + block level stretched across `area` + percentage.
+/// `━━━━━━━━──── 65%` — slim level line (with a speaker icon in Nerd Font mode) stretched across `area` + percentage.
 /// Returns the block bar rect for click-to-set volume.
 pub fn render_volume(buf: &mut Buffer, area: Rect, volume: f32, muted: bool, theme: &Theme) -> Rect {
     if area.width < 6 || area.height == 0 {
@@ -245,25 +236,27 @@ pub fn render_volume(buf: &mut Buffer, area: Rect, volume: f32, muted: bool, the
     }
     let silent = muted || volume <= 0.001;
     let pct = if muted {
-        " mut".to_string()
+        "mute".to_string()
     } else {
         format!("{:>4}", format!("{:.0}%", volume * 100.0))
     };
-    // icon(1) + space(1) + blocks + space(1) + pct; blocks stretch to fill `area`.
-    let segs = area.width.saturating_sub(3 + pct.width() as u16).max(3);
+    // [icon + space] + line + space + pct; the line stretches to fill `area`.
+    let icon = glyph(theme, if silent { Glyph::VolumeOff } else { Glyph::Volume });
+    let lead = if icon.is_empty() { 0 } else { 2 };
+    let segs = area.width.saturating_sub(lead + 1 + pct.width() as u16).max(3);
     let x0 = area.x;
+    if !icon.is_empty() {
+        buf.set_string(x0, area.y, icon, theme.dim());
+    }
 
-    let icon_color = if silent { theme.text_muted } else { theme.accent };
-    buf.set_string(x0, area.y, "♫", Style::default().fg(icon_color));
-
-    let bar = Rect { x: x0 + 2, y: area.y, width: segs, height: 1 };
+    let bar = Rect { x: x0 + lead, y: area.y, width: segs, height: 1 };
     let filled = if silent {
         0
     } else {
         (volume.clamp(0.0, 1.0) * segs as f32).round() as u16
     };
     for i in 0..segs {
-        let (sym, color) = if i < filled { ("█", theme.text) } else { ("░", theme.text_muted) };
+        let (sym, color) = if i < filled { ("━", theme.dim) } else { ("─", theme.faint) };
         buf.set_string(bar.x + i, bar.y, sym, Style::default().fg(color));
     }
     buf.set_string(bar.x + segs + 1, area.y, &pct, theme.muted());

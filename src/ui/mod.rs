@@ -1,5 +1,6 @@
 pub mod components;
 pub mod cover;
+pub mod glyphs;
 pub mod icons;
 pub mod keymap;
 pub mod marquee;

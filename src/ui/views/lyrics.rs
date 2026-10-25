@@ -1,6 +1,7 @@
 use crate::api::model::Lyrics;
 use crate::lyrics::current_line_index;
 use crate::ui::components::{empty_state, truncate};
+use crate::ui::glyphs::{glyph, Glyph};
 use crate::ui::theme::Theme;
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Wrap};
@@ -18,7 +19,7 @@ pub fn render(
         return;
     }
     let Some(lyrics) = lyrics else {
-        empty_state(buf, area, "✎", "No lyrics yet", "Lyrics show up here for the playing track", theme);
+        empty_state(buf, area, glyph(theme, Glyph::Lyrics), "No lyrics yet", "Lyrics show up here for the playing track", theme);
         return;
     };
 
@@ -57,7 +58,7 @@ pub fn render(
             .wrap(Wrap { trim: true })
             .render(body, buf);
     } else {
-        empty_state(buf, area, "✎", "Lyrics not available", "", theme);
+        empty_state(buf, area, glyph(theme, Glyph::Lyrics), "Lyrics not available", "", theme);
         return;
     }
 

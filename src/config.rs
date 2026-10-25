@@ -23,15 +23,54 @@ pub struct ControlConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
-    /// "dynamic" | "static"
+    /// Color theme: midnight | oled | catppuccin | tokyo-night | nord | gruvbox | rose-pine | dracula | light
     pub theme: String,
+    /// Accent color override as `#rrggbb`; empty uses the theme's own accent.
     pub accent: String,
+    /// Tint the accent with the playing track's cover art.
+    pub dynamic_accent: bool,
+    /// "text" (default) | "nerd" — Nerd Font pictograms in the sidebar and lists.
+    pub icons: String,
     /// "auto" | "kitty" | "iterm" | "sixel" | "halfblocks" | "off"
     pub art_protocol: String,
     /// "bars" | "mirror" | "wave" | "off"
     pub visualizer: String,
     pub show_hints: bool,
     pub card_art_halfblocks: bool,
+    /// Per-color `#rrggbb` overrides applied on top of the theme.
+    pub colors: ColorOverrides,
+}
+
+/// `[ui.colors]`: any subset of the theme's colors, e.g. `bg = "#101014"`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ColorOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dim: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub muted: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub faint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub success: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bg_sidebar: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bg_player: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bg_hover: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bg_selected: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bg_modal: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,12 +112,15 @@ impl Default for Config {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            theme: "dynamic".into(),
-            accent: "#FF0033".into(),
+            theme: "midnight".into(),
+            accent: String::new(),
+            dynamic_accent: true,
+            icons: "text".into(),
             art_protocol: "auto".into(),
             visualizer: "bars".into(),
             show_hints: true,
             card_art_halfblocks: true,
+            colors: ColorOverrides::default(),
         }
     }
 }
@@ -128,6 +170,7 @@ impl Config {
         for g in &mut cfg.playback.eq_gains {
             *g = g.clamp(-12.0, 12.0);
         }
+        cfg.ui.migrate_legacy_theme();
         Ok(cfg)
     }
 
@@ -142,6 +185,23 @@ impl Config {
     }
 }
 
+impl UiConfig {
+    /// `theme` used to be "dynamic" | "static" with an always-set red accent; map that onto
+    /// the preset model so old configs keep their look but can pick up preset accents.
+    fn migrate_legacy_theme(&mut self) {
+        let legacy = match self.theme.as_str() {
+            "dynamic" => true,
+            "static" => false,
+            _ => return,
+        };
+        self.dynamic_accent = legacy;
+        self.theme = "midnight".into();
+        if self.accent.eq_ignore_ascii_case("#FF0033") {
+            self.accent.clear();
+        }
+    }
+}
+
 pub fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
     let s = s.trim().trim_start_matches('#');
     if s.len() != 6 {
@@ -151,4 +211,23 @@ pub fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
     let g = u8::from_str_radix(&s[2..4], 16).ok()?;
     let b = u8::from_str_radix(&s[4..6], 16).ok()?;
     Some((r, g, b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_theme_values_migrate() {
+        let mut cfg: Config = toml::from_str("[ui]\ntheme = \"static\"\naccent = \"#FF0033\"\n").unwrap();
+        cfg.ui.migrate_legacy_theme();
+        assert_eq!(cfg.ui.theme, "midnight");
+        assert!(!cfg.ui.dynamic_accent);
+        assert!(cfg.ui.accent.is_empty());
+
+        let cfg: Config = toml::from_str("[ui]\ntheme = \"nord\"\n[ui.colors]\nbg = \"#000000\"\n").unwrap();
+        assert_eq!(cfg.ui.colors.bg.as_deref(), Some("#000000"));
+        assert!(cfg.ui.dynamic_accent);
+        assert!(toml::to_string_pretty(&cfg).unwrap().contains("bg = \"#000000\""));
+    }
 }

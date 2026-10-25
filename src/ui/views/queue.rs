@@ -1,5 +1,6 @@
 use crate::api::model::Track;
 use crate::ui::components::{empty_state, row, section_header, truncate};
+use crate::ui::glyphs::{glyph, Glyph};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::track_list::{render_track_list, TrackListOpts, TrackListState};
 use crate::ui::HitMap;
@@ -18,7 +19,7 @@ pub fn render(
         empty_state(
             buf,
             area,
-            "≡",
+            glyph(theme, Glyph::Queue),
             "Your queue is empty",
             "Search for a song and press Enter, or press a to add",
             theme,

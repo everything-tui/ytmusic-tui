@@ -2,6 +2,7 @@ use crate::api::model::{Shelf, ShelfItem};
 use crate::art::Cover;
 use crate::ui::components::{empty_state, fill, section_header, truncate};
 use crate::ui::cover::{CoverRenderer, CoverSlot};
+use crate::ui::glyphs::{glyph, Glyph};
 use crate::ui::theme::Theme;
 use crate::ui::HitMap;
 use ratatui::prelude::*;
@@ -32,7 +33,7 @@ pub fn render(
         empty_state(
             buf,
             area,
-            "⌂",
+            glyph(theme, Glyph::Home),
             "Nothing here yet",
             "Press / to search · sign in with L for personalized picks",
             theme,
@@ -59,7 +60,6 @@ pub fn render(
 
     let cards_fit = ((area.width + CARD_GAP) / (card_w + CARD_GAP)).max(1) as usize;
     let mut y = area.y;
-    let mut slot_i: u8 = 0;
     for (si, shelf) in shelves.iter().enumerate().skip(first) {
         if y + 3 > area.y + area.height {
             break;
@@ -101,14 +101,13 @@ pub fn render(
                 renderer,
                 graphics,
                 blocked,
-                CoverSlot::Home(slot_i),
+                CoverSlot::Card,
                 card,
                 art_h,
                 selected,
                 buf,
                 theme,
             );
-            slot_i = slot_i.saturating_add(1);
             hit.home_cards.push((card, si, ii));
             x += card_w + CARD_GAP;
         }
@@ -130,7 +129,7 @@ pub(crate) fn render_card(
     buf: &mut Buffer,
     theme: &Theme,
 ) {
-    let (title, sub, glyph) = item_labels(item);
+    let (title, sub, kind) = item_labels(item);
     if selected {
         fill(
             buf,
@@ -157,9 +156,18 @@ pub(crate) fn render_card(
         } else {
             let tint = tint_for(&title, theme);
             fill(buf, art, Style::default().bg(tint));
-            let gx = art.x + art.width.saturating_sub(glyph.width() as u16) / 2;
+            // Nerd icon for the kind, or the title's initial as a quiet monogram.
+            let mark = match glyph(theme, kind) {
+                "" => title
+                    .chars()
+                    .find(|c| c.is_alphanumeric())
+                    .map(|c| c.to_uppercase().to_string())
+                    .unwrap_or_default(),
+                g => g.to_string(),
+            };
+            let gx = art.x + art.width.saturating_sub(mark.width() as u16) / 2;
             let gy = art.y + art.height / 2;
-            buf.set_string(gx, gy, glyph, Style::default().fg(theme.dim).bg(tint));
+            buf.set_string(gx, gy, &mark, theme.dim().bg(tint).add_modifier(Modifier::BOLD));
         }
     }
     let ty = art.y + art.height;
@@ -177,11 +185,11 @@ pub(crate) fn render_card(
     }
 }
 
-/// Deterministic dark tint per item so cards are distinguishable without artwork.
+/// Deterministic muted tint per item so cards are distinguishable without artwork.
 fn tint_for(s: &str, theme: &Theme) -> Color {
     let h = s.bytes().fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
     let hue = (h % 360) as f32 / 360.0;
-    let (r, g, b) = hsl(hue, 0.35, 0.22);
+    let (r, g, b) = hsl(hue, 0.35, if theme.light { 0.86 } else { 0.22 });
     theme.color(r, g, b)
 }
 
@@ -209,9 +217,9 @@ fn hsl(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
     (f(h + 1.0 / 3.0), f(h), f(h - 1.0 / 3.0))
 }
 
-fn item_labels(item: &ShelfItem) -> (String, String, &'static str) {
+fn item_labels(item: &ShelfItem) -> (String, String, Glyph) {
     match item {
-        ShelfItem::Track(t) => (t.title.clone(), t.artist_names(), "♫"),
+        ShelfItem::Track(t) => (t.title.clone(), t.artist_names(), Glyph::Song),
         ShelfItem::Album(a) => (
             a.title.clone(),
             a.artists
@@ -219,9 +227,9 @@ fn item_labels(item: &ShelfItem) -> (String, String, &'static str) {
                 .map(|x| x.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
-            "◉",
+            Glyph::Album,
         ),
-        ShelfItem::Playlist(p) => (p.title.clone(), p.author.clone().unwrap_or_default(), "≡"),
-        ShelfItem::Artist(a) => (a.name.clone(), "Artist".into(), "☺"),
+        ShelfItem::Playlist(p) => (p.title.clone(), p.author.clone().unwrap_or_default(), Glyph::Playlist),
+        ShelfItem::Artist(a) => (a.name.clone(), "Artist".into(), Glyph::Artist),
     }
 }

@@ -86,10 +86,17 @@ Written on first run to the platform config dir, e.g.:
 
 ```toml
 [ui]
-theme = "dynamic"          # or "static"
-accent = "#FF0033"
+theme = "midnight"         # midnight | oled | catppuccin | tokyo-night | nord | gruvbox | rose-pine | dracula | light
+accent = ""                # "#rrggbb" to override the theme's accent
+dynamic_accent = true      # tint the accent with the playing track's cover art
+icons = "text"             # "nerd" for Nerd Font icons in the sidebar and lists
 visualizer = "bars"        # bars | mirror | wave | off
 show_hints = true
+
+[ui.colors]                # optional per-color overrides on top of the theme
+# bg = "#101014"
+# bg_sidebar = "#0a0a0d"   # also: bg_player bg_hover bg_selected bg_modal
+# text = "#ececf1"         # also: dim muted faint border error success
 
 [playback]
 autoplay = true
@@ -100,7 +107,7 @@ eq_enabled = true
 eq_gains = [0.0, 0.0, 0.0, 0.0, 0.0]  # Bass … Treble, ±12 dB
 ```
 
-Press **`e`** for the equalizer (presets include Bass Boost).
+Press **`e`** for the equalizer (presets include Bass Boost). Switch themes live from the command palette (**`Ctrl+P`**, type "theme"); the choice is saved to the config.
 
 Logs: `…/Caches/…/logs/yt-tui.log` (never written to the terminal).
 

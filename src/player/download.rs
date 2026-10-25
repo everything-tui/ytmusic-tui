@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
 /// Wait for this many bytes (or EOF/failure) before returning from `get`,
@@ -28,8 +28,12 @@ impl Downloader {
         // Default UA is overwritten on every request by `ResolvedStream.headers`.
         // No gzip: googlevideo Range/206 bodies are already compressed audio; asking
         // for content-encoding has caused intermittent CDN 403s / truncated reads.
+        // Without timeouts a stalled CDN connection never fails, so readers
+        // waiting on the GrowingFile (and the next track switch) hang forever.
         let client = reqwest::Client::builder()
             .gzip(false)
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(20))
             .build()
             .expect("reqwest client");
         Self {

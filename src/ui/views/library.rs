@@ -1,5 +1,6 @@
 use crate::api::model::{Album, Artist, Playlist, Track};
 use crate::ui::components::{empty_state, pills, row, section_header};
+use crate::ui::glyphs::{glyph, Glyph};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::track_list::{
     render_item_list, render_track_list, TrackListOpts, TrackListState,
@@ -49,7 +50,7 @@ pub fn render(
         empty_state(
             buf,
             area,
-            "♫",
+            glyph(theme, Glyph::Library),
             "Sign in to see your library",
             "Press L to sign in — liked songs, playlists, albums and history appear here",
             theme,
@@ -138,7 +139,7 @@ pub fn render(
                 .collect();
             render_item_list(
                 &items,
-                "◉",
+                glyph(theme, Glyph::Album),
                 list.selected,
                 body,
                 buf,
@@ -154,7 +155,7 @@ pub fn render(
                 .collect();
             render_item_list(
                 &items,
-                "☺",
+                glyph(theme, Glyph::Artist),
                 list.selected,
                 body,
                 buf,
@@ -224,7 +225,6 @@ fn render_playlist_grid(
 
     let sel_row = selected / cols;
     let first_row = sel_row.saturating_sub(rows_fit - 1);
-    let mut slot_i: u8 = 0;
     for (ri, chunk) in playlists.chunks(cols).enumerate().skip(first_row).take(rows_fit) {
         let y = area.y + (ri - first_row) as u16 * row_h;
         let h = card_h.min((area.y + area.height).saturating_sub(y));
@@ -248,14 +248,13 @@ fn render_playlist_grid(
                 renderer,
                 graphics,
                 blocked,
-                CoverSlot::Home(slot_i),
+                CoverSlot::Card,
                 card,
                 art_h,
                 idx == selected,
                 buf,
                 theme,
             );
-            slot_i = slot_i.saturating_add(1);
             hit.list_rows.push((card, idx));
         }
     }

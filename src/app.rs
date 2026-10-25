@@ -229,10 +229,7 @@ impl App {
         signed_in: bool,
         account_name: Option<String>,
     ) -> Self {
-        let theme = Theme::new(
-            &config.ui.accent,
-            config.ui.theme == "dynamic",
-        );
+        let theme = Theme::from_config(&config.ui);
         let first_run = !signed_in;
         let overlay = if first_run {
             Overlay::Onboarding
@@ -503,11 +500,19 @@ impl App {
             Overlay::CommandPalette { query, .. } => query.to_lowercase(),
             _ => String::new(),
         };
+        let themes = crate::ui::theme::PRESETS.iter().map(|(name, _)| {
+            let current = if *name == self.theme.name { "  ·  current" } else { "" };
+            (
+                format!("Theme: {}{current}", crate::ui::theme::display_name(name)),
+                format!("theme:{name}"),
+            )
+        });
         all.into_iter()
+            .map(|(n, i)| (n.to_string(), i.to_string()))
+            .chain(themes)
             .filter(|(name, id)| {
                 q.is_empty() || name.to_lowercase().contains(&q) || id.contains(&q)
             })
-            .map(|(n, i)| (n.to_string(), i.to_string()))
             .collect()
     }
 
@@ -1204,9 +1209,27 @@ impl App {
             "equalizer" => self.overlay = Overlay::Equalizer { selected: 0 },
             "quit" => self.should_quit = true,
             "mcp" => self.toggle_control(),
-            _ => {}
+            other => {
+                if let Some(name) = other.strip_prefix("theme:") {
+                    self.set_theme(name);
+                }
+            }
         }
         cmds
+    }
+
+    /// Switches the color theme live and remembers it in the config.
+    pub fn set_theme(&mut self, name: &str) {
+        let Some(name) = crate::ui::theme::preset_name(name) else {
+            return;
+        };
+        self.config.ui.theme = name.into();
+        let _ = self.config.save(&self.paths);
+        self.theme = Theme::from_config(&self.config.ui);
+        // Re-apply the cover accent on top of the new palette.
+        self.accent_for = None;
+        self.sync_accent_to_cover();
+        self.push_toast(Toast::info(format!("Theme: {}", crate::ui::theme::display_name(name))));
     }
 
     pub fn toggle_control(&mut self) {
@@ -2278,6 +2301,14 @@ async fn coalesce_paste_flood(
     }
 }
 
+/// Resolves when a background-encoded cover is ready; pends forever without graphics.
+async fn wait_cover_ready(notify: &Option<Arc<tokio::sync::Notify>>) {
+    match notify {
+        Some(n) => n.notified().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Next control-bridge action; pends forever when the bridge is disabled.
 async fn recv_control(rx: &mut Option<mpsc::UnboundedReceiver<Action>>) -> Option<Action> {
     match rx {
@@ -2301,6 +2332,7 @@ pub async fn run_ui(
         EnableBracketedPaste
     )?;
     app.cover_ui = crate::ui::cover::CoverRenderer::detect(&app.config.ui.art_protocol);
+    let cover_ready = app.cover_ui.wake_handle();
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(33)); // ~30fps
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -2326,10 +2358,20 @@ pub async fn run_ui(
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
 
+    /// Minimum spacing between frames; input arriving faster is coalesced into one draw.
+    const FRAME: Duration = Duration::from_millis(16);
+
     let result = loop {
         let playing = app.playback_state == PlaybackState::Playing;
+        // A throttled frame must still be drawn once the spacing has passed, not whenever
+        // the next tick happens to arrive (up to 250 ms later while paused).
+        let redraw_at = tokio::time::Instant::from_std(last_draw + FRAME);
 
         tokio::select! {
+            _ = tokio::time::sleep_until(redraw_at), if dirty => {}
+            _ = wait_cover_ready(&cover_ready) => {
+                dirty = true;
+            }
             _ = tick.tick(), if playing => {
                 for a in media.drain_actions() {
                     let cmds = app.update(a);
@@ -2425,7 +2467,7 @@ pub async fn run_ui(
             }
         }
 
-        if !dirty || last_draw.elapsed() < Duration::from_millis(16) {
+        if !dirty || last_draw.elapsed() < FRAME {
             if app.should_quit {
                 break Ok(());
             }

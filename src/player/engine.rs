@@ -1,7 +1,7 @@
 use crate::action::PlayerEvent;
 use crate::api::model::Track;
 use crate::player::eq::{EqHandle, EqParams, EqSource};
-use crate::player::source::{open_decoder_resilient, GrowingFile};
+use crate::player::source::{CancelToken, GrowingFile, SymphoniaSource};
 use crossbeam_channel::{Receiver, Sender};
 use rodio::{OutputStream, Sink, Source};
 use std::sync::{Arc, Mutex};
@@ -9,11 +9,15 @@ use std::time::Duration;
 use tracing::{error, info};
 
 pub enum EngineCmd {
+    /// Decoder is opened by the caller: probing waits on the download, and the
+    /// engine thread must never block on network I/O.
     Load {
         track: Track,
         file: Arc<GrowingFile>,
+        source: SymphoniaSource,
         start: Duration,
         volume: f32,
+        cancel: CancelToken,
     },
     Play,
     Pause,
@@ -22,6 +26,8 @@ pub enum EngineCmd {
     SetVolume(f32),
     SetEq(EqParams),
     Stop,
+    /// Like `Stop`, but silent: a new track is already loading.
+    Unload,
     Shutdown,
 }
 
@@ -120,6 +126,7 @@ fn run_engine(
 
     let mut current_track: Option<Track> = None;
     let mut current_file: Option<Arc<GrowingFile>> = None;
+    let mut current_cancel: Option<CancelToken> = None;
     let sink_pos = Arc::new(Mutex::new(Duration::ZERO));
     let playing = Arc::new(Mutex::new(false));
 
@@ -142,100 +149,38 @@ fn run_engine(
             Ok(EngineCmd::Load {
                 track,
                 file,
+                source,
                 start,
                 volume,
+                cancel,
             }) => {
-                sink.stop();
-                sink.clear();
-                current_file = Some(file.clone());
-                let _ = event_tx.send(PlayerEvent::Loading {
+                // Superseded while in flight — a newer Load/Unload follows.
+                if cancel.is_cancelled() {
+                    continue;
+                }
+                halt(&sink, &mut current_cancel);
+                current_file = Some(file);
+                current_cancel = Some(cancel);
+                let decoded_dur = source.total_duration();
+                let eqd = EqSource::new(source, eq.clone());
+                let tapped = DirectTap::new(eqd, samples.clone());
+                sink.append(tapped);
+                sink.set_volume(volume * volume);
+                if start > Duration::ZERO {
+                    let _ = sink.try_seek(start);
+                }
+                sink.play();
+                *playing.lock().unwrap() = true;
+                let mut track = track;
+                if track.duration.is_none() {
+                    track.duration = decoded_dur;
+                }
+                current_track = Some(track.clone());
+                let _ = event_tx.send(PlayerEvent::Playing {
                     track: track.clone(),
                 });
-                match open_decoder_resilient(file.clone()) {
-                    Ok(source) => {
-                        let decoded_dur = source.total_duration();
-                        let eqd = EqSource::new(source, eq.clone());
-                        let tapped = DirectTap::new(eqd, samples.clone());
-                        sink.append(tapped);
-                        sink.set_volume(volume * volume);
-                        if start > Duration::ZERO {
-                            let _ = sink.try_seek(start);
-                        }
-                        sink.play();
-                        *playing.lock().unwrap() = true;
-                        let mut track = track;
-                        if track.duration.is_none() {
-                            track.duration = decoded_dur;
-                        }
-                        current_track = Some(track.clone());
-                        let _ = event_tx.send(PlayerEvent::Playing {
-                            track: track.clone(),
-                        });
-                        if let Some(d) = track.duration.or(decoded_dur) {
-                            let _ = event_tx.send(PlayerEvent::Duration(d));
-                        }
-                    }
-                    Err(e) => {
-                        // Last chance: file may have finished into the cache during the race.
-                        let recovered = file
-                            .path()
-                            .to_string_lossy()
-                            .trim_end_matches(".part")
-                            .to_string();
-                        let recovered = std::path::PathBuf::from(recovered);
-                        let retry = if recovered.exists() {
-                            GrowingFile::open_complete(&recovered)
-                                .and_then(open_decoder_resilient)
-                        } else {
-                            Err(e)
-                        };
-                        match retry {
-                            Ok(source) => {
-                                let decoded_dur = source.total_duration();
-                                let eqd = EqSource::new(source, eq.clone());
-                                let tapped = DirectTap::new(eqd, samples.clone());
-                                sink.append(tapped);
-                                sink.set_volume(volume * volume);
-                                if start > Duration::ZERO {
-                                    let _ = sink.try_seek(start);
-                                }
-                                sink.play();
-                                *playing.lock().unwrap() = true;
-                                let mut track = track;
-                                if track.duration.is_none() {
-                                    track.duration = decoded_dur;
-                                }
-                                current_track = Some(track.clone());
-                                let _ = event_tx.send(PlayerEvent::Playing {
-                                    track: track.clone(),
-                                });
-                                if let Some(d) = track.duration.or(decoded_dur) {
-                                    let _ = event_tx.send(PlayerEvent::Duration(d));
-                                }
-                            }
-                            Err(e) => {
-                                *playing.lock().unwrap() = false;
-                                current_track = None;
-                                current_file = None;
-                                // #region agent log
-                                crate::debug_log::log(
-                                    "E",
-                                    "player/engine.rs:Load",
-                                    "decoder failed",
-                                    serde_json::json!({
-                                        "title": track.title,
-                                        "video_id": track.video_id,
-                                        "error": e.to_string(),
-                                    }),
-                                );
-                                // #endregion
-                                let _ = event_tx.send(PlayerEvent::Error(format!(
-                                    "Couldn't play {}: {e}",
-                                    track.title
-                                )));
-                            }
-                        }
-                    }
+                if let Some(d) = track.duration.or(decoded_dur) {
+                    let _ = event_tx.send(PlayerEvent::Duration(d));
                 }
             }
             Ok(EngineCmd::Play) => {
@@ -273,15 +218,19 @@ fn run_engine(
             Ok(EngineCmd::SetEq(params)) => {
                 eq.set(params);
             }
-            Ok(EngineCmd::Stop) => {
-                sink.stop();
-                sink.clear();
+            Ok(cmd @ (EngineCmd::Stop | EngineCmd::Unload)) => {
+                halt(&sink, &mut current_cancel);
                 *playing.lock().unwrap() = false;
                 current_track = None;
                 current_file = None;
-                let _ = event_tx.send(PlayerEvent::Stopped);
+                if matches!(cmd, EngineCmd::Stop) {
+                    let _ = event_tx.send(PlayerEvent::Stopped);
+                }
             }
             Ok(EngineCmd::Shutdown) => {
+                if let Some(c) = current_cancel.take() {
+                    c.cancel();
+                }
                 sink.stop();
                 break;
             }
@@ -294,7 +243,9 @@ fn run_engine(
 
         if last_empty_check.elapsed() > Duration::from_millis(200) {
             last_empty_check = std::time::Instant::now();
-            if *playing.lock().unwrap() && sink.empty() && current_track.is_some() {
+            // A cancelled stream ends on purpose — not a natural track end.
+            let cancelled = current_cancel.as_ref().is_some_and(|c| c.is_cancelled());
+            if *playing.lock().unwrap() && sink.empty() && current_track.is_some() && !cancelled {
                 *playing.lock().unwrap() = false;
                 let title = current_track
                     .as_ref()
@@ -319,6 +270,17 @@ fn run_engine(
         }
     }
     Ok(())
+}
+
+/// Drop the current stream. The cancel must come first: `Sink::clear` waits for
+/// the audio callback to release the source, and that callback may be blocked
+/// reading a download that has stalled.
+fn halt(sink: &Sink, current_cancel: &mut Option<CancelToken>) {
+    if let Some(c) = current_cancel.take() {
+        c.cancel();
+    }
+    sink.stop();
+    sink.clear();
 }
 
 struct DirectTap<S> {
@@ -405,7 +367,7 @@ mod viz_feed_tests {
             return;
         }
         let gf = GrowingFile::open_complete(&path).unwrap();
-        let source = open_decoder(gf).unwrap();
+        let source = open_decoder(gf, &CancelToken::default()).unwrap();
         let buf = SampleBuffer::default();
         let mut tapped = DirectTap::new(source, buf.clone());
         let ch = tapped.channels() as usize;

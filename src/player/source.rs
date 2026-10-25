@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
-use parking_lot::{Condvar, Mutex};
+use parking_lot::{Condvar, Mutex, MutexGuard};
 use ringbuf::traits::{Producer, Split};
 use ringbuf::{HeapProd, HeapRb};
 use rodio::Source;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,6 +24,42 @@ struct GrowingState {
 }
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// How often blocked readers wake up to check their [`CancelToken`].
+const CANCEL_POLL: Duration = Duration::from_millis(50);
+
+/// Set when the playback that owns a reader is superseded, so reads blocked on
+/// a slow or stalled download give up instead of hanging the audio thread.
+#[derive(Clone, Default)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// Block until `ready` holds (downloads always notify on progress/finish),
+/// bailing out once `cancel` fires.
+fn wait_state<'a>(
+    inner: &'a (Mutex<GrowingState>, Condvar),
+    cancel: &CancelToken,
+    ready: impl Fn(&GrowingState) -> bool,
+) -> std::io::Result<MutexGuard<'a, GrowingState>> {
+    let (lock, cv) = inner;
+    let mut g = lock.lock();
+    while !ready(&g) {
+        if cancel.is_cancelled() {
+            return Err(std::io::Error::other("playback cancelled"));
+        }
+        cv.wait_for(&mut g, CANCEL_POLL);
+    }
+    Ok(g)
+}
 
 /// A file that grows as a background download writes to it.
 /// Readers block (via Condvar) until the requested bytes are available.
@@ -177,11 +213,11 @@ impl GrowingFile {
     }
 
     pub fn wait_bytes(&self, min: u64) -> Result<()> {
-        let (lock, cv) = &*self.inner;
-        let mut g = lock.lock();
-        while g.len < min && !g.complete {
-            cv.wait(&mut g);
-        }
+        self.wait_bytes_cancellable(min, &CancelToken::default())
+    }
+
+    pub fn wait_bytes_cancellable(&self, min: u64, cancel: &CancelToken) -> Result<()> {
+        let g = wait_state(&self.inner, cancel, |g| g.len >= min || g.complete)?;
         if let Some(ref e) = g.failed {
             anyhow::bail!("download failed: {e}");
         }
@@ -191,9 +227,11 @@ impl GrowingFile {
         Ok(())
     }
 
-    pub fn reader(&self) -> GrowingFileReader {
+    pub fn reader(&self, cancel: CancelToken) -> GrowingFileReader {
         GrowingFileReader {
             inner: self.inner.clone(),
+            cancel,
+            probing: Arc::new(AtomicBool::new(false)),
             pos: 0,
             file: None,
             opened_path: None,
@@ -203,6 +241,9 @@ impl GrowingFile {
 
 pub struct GrowingFileReader {
     inner: Arc<(Mutex<GrowingState>, Condvar)>,
+    cancel: CancelToken,
+    /// While set, an unfinished download reports itself unseekable (see `is_seekable`).
+    probing: Arc<AtomicBool>,
     pos: u64,
     file: Option<File>,
     opened_path: Option<PathBuf>,
@@ -248,11 +289,7 @@ impl GrowingFileReader {
     }
 
     fn wait_for(&self, need: u64) -> std::io::Result<()> {
-        let (lock, cv) = &*self.inner;
-        let mut guard = lock.lock();
-        while guard.len < need && !guard.complete {
-            cv.wait(&mut guard);
-        }
+        let guard = wait_state(&self.inner, &self.cancel, |g| g.len >= need || g.complete)?;
         if let Some(ref err) = guard.failed {
             return Err(std::io::Error::other(err.clone()));
         }
@@ -286,11 +323,8 @@ impl Seek for GrowingFileReader {
             SeekFrom::End(p) => {
                 // Never invent an end offset from `expected` alone — Symphonia/MP4
                 // will try to read there and rodio panics on the resulting SeekError.
-                let (lock, cv) = &*self.inner;
-                let mut guard = lock.lock();
-                while !guard.complete && guard.failed.is_none() {
-                    cv.wait(&mut guard);
-                }
+                let guard =
+                    wait_state(&self.inner, &self.cancel, |g| g.complete || g.failed.is_some())?;
                 if let Some(ref err) = guard.failed {
                     return Err(std::io::Error::other(err.clone()));
                 }
@@ -389,6 +423,12 @@ pub fn make_visualizer_ring(capacity: usize) -> (HeapProd<f32>, ringbuf::HeapCon
 impl symphonia::core::io::MediaSource for GrowingFileReader {
     fn is_seekable(&self) -> bool {
         let g = self.inner.0.lock();
+        // A seekable probe scans every top-level atom, i.e. waits for the whole
+        // download — minutes when googlevideo throttles to ~realtime. Probe in
+        // streaming mode instead; packets still seek once probing is done.
+        if self.probing.load(Ordering::SeqCst) && !g.complete {
+            return false;
+        }
         // YouTube DASH/fMP4 carries a segment index with absolute packet offsets.
         // Symphonia needs a seekable MediaSource (with known byte_len) to jump to
         // those offsets while the file is still growing — otherwise demux dies with
@@ -437,6 +477,8 @@ impl SymphoniaSource {
         // download is finished. Progressive DASH still advertises seekability via
         // MediaSource when `expected` length is known (see GrowingFileReader).
         let gapless = reader.is_fully_buffered();
+        let probing = reader.probing.clone();
+        probing.store(true, Ordering::SeqCst);
         let mss = MediaSourceStream::new(Box::new(reader), Default::default());
         let mut hint = Hint::new();
         hint.with_extension(extension);
@@ -450,7 +492,9 @@ impl SymphoniaSource {
                 },
                 &MetadataOptions::default(),
             )
-            .context("probing audio format")?;
+            .context("probing audio format");
+        probing.store(false, Ordering::SeqCst);
+        let probed = probed?;
 
         let track = probed
             .format
@@ -616,31 +660,31 @@ impl Source for SymphoniaSource {
 /// Bytes needed before probing — enough for ftyp+moov/sidx on typical YouTube AAC.
 pub const START_BUFFER_BYTES: u64 = 96 * 1024;
 
-pub fn open_decoder(gf: Arc<GrowingFile>) -> Result<SymphoniaSource> {
-    gf.wait_bytes(START_BUFFER_BYTES)?;
+pub fn open_decoder(gf: Arc<GrowingFile>, cancel: &CancelToken) -> Result<SymphoniaSource> {
+    gf.wait_bytes_cancellable(START_BUFFER_BYTES, cancel)?;
     // Prefer m4a (itag 140); fall back to mp4 for progressive itag 18 muxed streams.
-    match SymphoniaSource::open(gf.reader(), "m4a") {
+    match SymphoniaSource::open(gf.reader(cancel.clone()), "m4a") {
         Ok(src) => Ok(src),
-        Err(e) => SymphoniaSource::open(gf.reader(), "mp4")
+        Err(e) => SymphoniaSource::open(gf.reader(cancel.clone()), "mp4")
             .with_context(|| format!("opening audio stream (m4a failed: {e})")),
     }
 }
 
 /// Like `open_decoder`, but if the first probe fails while more data is still arriving,
 /// wait for a larger buffer and try once more (avoids false "can't open" toasts).
-pub fn open_decoder_resilient(gf: Arc<GrowingFile>) -> Result<SymphoniaSource> {
-    match open_decoder(gf.clone()) {
+pub fn open_decoder_resilient(gf: Arc<GrowingFile>, cancel: &CancelToken) -> Result<SymphoniaSource> {
+    match open_decoder(gf.clone(), cancel) {
         Ok(src) => Ok(src),
         Err(first) => {
-            if gf.is_failed() {
+            if gf.is_failed() || cancel.is_cancelled() {
                 return Err(first);
             }
             // Wait for more data (or completion), then retry with a fresh reader.
-            let _ = gf.wait_bytes(512 * 1024);
-            if gf.is_failed() {
+            let _ = gf.wait_bytes_cancellable(512 * 1024, cancel);
+            if gf.is_failed() || cancel.is_cancelled() {
                 return Err(first);
             }
-            open_decoder(gf).map_err(|e| first.context(format!("retry also failed: {e}")))
+            open_decoder(gf, cancel).map_err(|e| first.context(format!("retry also failed: {e}")))
         }
     }
 }
@@ -677,13 +721,60 @@ mod decode_tests {
     }
 
     #[test]
+    fn cancel_unblocks_reader_on_stalled_download() {
+        let dir = std::env::temp_dir().join("yt-tui-cancel-read");
+        let gf = GrowingFile::create(&dir.join("stalled.m4a")).unwrap();
+        gf.append(&[0u8; 16]).unwrap();
+        let cancel = CancelToken::default();
+        let mut reader = gf.reader(cancel.clone());
+        let handle = std::thread::spawn(move || {
+            let mut buf = [0u8; 64];
+            let first = reader.read(&mut buf).unwrap();
+            // Nothing more ever arrives — this read used to block forever.
+            (first, reader.read(&mut buf).is_err())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        cancel.cancel();
+        let (first, cancelled) = handle.join().unwrap();
+        assert_eq!(first, 16);
+        assert!(cancelled);
+    }
+
+    #[test]
+    fn open_does_not_wait_for_full_download() {
+        let path = sample_path();
+        if !path.exists() {
+            return;
+        }
+        let data = std::fs::read(&path).unwrap();
+        let dir = std::env::temp_dir().join("yt-tui-throttled-open");
+        let gf = GrowingFile::create(&dir.join("throttled.m4a")).unwrap();
+        // A download stuck after the first ~200 KB (throttled CDN).
+        gf.append(&data[..data.len().min(200 * 1024)]).unwrap();
+        gf.set_expected_len(data.len() as u64);
+
+        let cancel = CancelToken::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let gf2 = gf.clone();
+        let cancel2 = cancel.clone();
+        std::thread::spawn(move || {
+            let n = open_decoder(gf2, &cancel2).map(|mut src| src.by_ref().take(4_000).count());
+            let _ = tx.send(n.map_err(|e| e.to_string()));
+        });
+        let res = rx.recv_timeout(std::time::Duration::from_secs(5));
+        cancel.cancel();
+        let n = res.expect("open blocked waiting for the whole file").unwrap();
+        assert!(n > 0);
+    }
+
+    #[test]
     fn decode_complete_cached_dash_m4a() {
         let path = sample_path();
         if !path.exists() {
             return;
         }
         let gf = GrowingFile::open_complete(&path).unwrap();
-        let mut src = open_decoder(gf).unwrap();
+        let mut src = open_decoder(gf, &CancelToken::default()).unwrap();
         assert!(src.channels() >= 1);
         assert!(src.sample_rate() >= 8_000);
         assert!(src.by_ref().take(4_000).count() > 0);
@@ -716,7 +807,7 @@ mod decode_tests {
             gf2.mark_complete();
         });
 
-        let mut src = open_decoder(gf).expect("partial open");
+        let mut src = open_decoder(gf, &CancelToken::default()).expect("partial open");
         // Drain well past the initial buffer — this used to die with
         // "packet out-of-bounds for a non-seekable stream".
         let n = src.by_ref().take(480_000).count();

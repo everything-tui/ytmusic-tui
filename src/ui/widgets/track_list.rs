@@ -99,9 +99,14 @@ pub fn render_track_list<T: Borrow<Track>>(
     }
 
     let title_w = estimate_fill_width(table_area.width, &widths, 4);
+    // Only the visible window becomes rows: long playlists would otherwise format
+    // thousands of cells every frame while scrolling.
+    let offset = scroll_offset(state.selected, visible, tracks.len());
     let rows: Vec<Row> = tracks
         .iter()
         .enumerate()
+        .skip(offset)
+        .take(visible)
         .map(|(i, t)| {
             let t: &Track = t.borrow();
             let is_playing = opts.playing_id == Some(t.video_id.as_str());
@@ -127,7 +132,7 @@ pub fn render_track_list<T: Borrow<Track>>(
                 budget = budget.saturating_sub(3);
             }
             if t.from_radio {
-                budget = budget.saturating_sub(2);
+                budget = budget.saturating_sub(6);
             }
             let title_style = if is_playing { theme.playing() } else { base };
             if !show_artist {
@@ -142,10 +147,10 @@ pub fn render_track_list<T: Borrow<Track>>(
                 title_spans.push(Span::styled(truncate(&t.title, budget), title_style));
             }
             if t.explicit {
-                title_spans.push(Span::styled(" E ", Style::default().fg(theme.bg).bg(theme.dim)));
+                title_spans.push(Span::styled(" E ", Style::default().fg(theme.dim).bg(theme.bg_selected)));
             }
             if t.from_radio {
-                title_spans.push(Span::styled(" ⟳", theme.muted()));
+                title_spans.push(Span::styled(" radio", theme.faint()));
             }
 
             let mut cells = vec![Cell::from(num), Cell::from(Line::from(title_spans))];
@@ -170,10 +175,9 @@ pub fn render_track_list<T: Borrow<Track>>(
         })
         .collect();
 
-    let offset = scroll_offset(state.selected, visible, tracks.len());
-    let mut ts = TableState::new().with_offset(offset);
+    let mut ts = TableState::new();
     if !opts.no_selection && !tracks.is_empty() {
-        ts = ts.with_selected(Some(state.selected.min(tracks.len() - 1)));
+        ts = ts.with_selected(Some(state.selected.min(tracks.len() - 1).saturating_sub(offset)));
     }
     let table = Table::new(rows, widths)
         .header(Row::new(header).style(theme.muted()).bottom_margin(1))
@@ -257,27 +261,31 @@ pub fn render_item_list(
         ..area
     };
     let show_sub = list_area.width >= 40;
-    let mut widths = vec![Constraint::Length(2), Constraint::Fill(3)];
+    let with_icon = !icon.is_empty();
+    let mut widths = vec![Constraint::Fill(3)];
+    if with_icon {
+        widths.insert(0, Constraint::Length(2));
+    }
     if show_sub {
         widths.push(Constraint::Fill(2));
     }
+    let offset = scroll_offset(selected, visible, items.len());
     let rows: Vec<Row> = items
         .iter()
+        .skip(offset)
+        .take(visible)
         .map(|(title, sub)| {
-            let mut cells = vec![
-                Cell::from(Span::styled(icon.to_string(), theme.muted())),
-                Cell::from(Span::styled(title.clone(), theme.normal())),
-            ];
+            let mut cells = vec![Cell::from(Span::styled(title.clone(), theme.normal()))];
+            if with_icon {
+                cells.insert(0, Cell::from(Span::styled(icon.to_string(), theme.muted())));
+            }
             if show_sub {
                 cells.push(Cell::from(Span::styled(sub.clone(), theme.dim())));
             }
             Row::new(cells)
         })
         .collect();
-    let offset = scroll_offset(selected, visible, items.len());
-    let mut ts = TableState::new()
-        .with_offset(offset)
-        .with_selected(Some(selected.min(items.len() - 1)));
+    let mut ts = TableState::new().with_selected(Some(selected.min(items.len() - 1).saturating_sub(offset)));
     let table = Table::new(rows, widths)
         .column_spacing(2)
         .row_highlight_style(theme.row_selected());

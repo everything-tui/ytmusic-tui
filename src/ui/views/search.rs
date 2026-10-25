@@ -1,6 +1,7 @@
 use crate::action::{Action, SearchFilter};
 use crate::api::model::{Album, Artist, Playlist, Track};
 use crate::ui::components::{empty_state, fill, pills, row, section_header, truncate};
+use crate::ui::glyphs::{glyph, Glyph};
 use crate::ui::theme::Theme;
 use crate::ui::views::library::artist_line;
 use crate::ui::widgets::track_list::{
@@ -56,7 +57,10 @@ pub fn render(
     let tx = field.x + 2;
     let ty = field.y + 1;
     let max = field.width.saturating_sub(6) as usize;
-    buf.set_string(tx, ty, "⌕", theme.dim().patch(bg));
+    match glyph(theme, Glyph::Search) {
+        "" => buf.set_string(tx, ty, "›", theme.accent_bold().patch(bg)),
+        g => buf.set_string(tx, ty, g, theme.dim().patch(bg)),
+    };
     if data.query.is_empty() {
         let px = if data.editing {
             buf.set_string(tx + 3, ty, "█", theme.accent().patch(bg));
@@ -145,13 +149,16 @@ pub fn render(
                 buf.set_stringn(
                     r.x + 1,
                     y,
-                    format!("⌕  {}", truncate(s, r.width.saturating_sub(5) as usize)),
+                    match glyph(theme, Glyph::Search) {
+                        "" => truncate(s, r.width.saturating_sub(2) as usize),
+                        g => format!("{g}  {}", truncate(s, r.width.saturating_sub(5) as usize)),
+                    },
                     r.width as usize,
                     style.patch(if i == cursor { theme.row_selected() } else { Style::default() }),
                 );
             }
         } else if data.query.is_empty() {
-            empty_state(buf, body, "⌕", "Search YouTube Music", "Songs, albums, artists and playlists", theme);
+            empty_state(buf, body, glyph(theme, Glyph::Search), "Search YouTube Music", "Songs, albums, artists and playlists", theme);
         } else {
             empty_state(buf, body, "", "No results", "Try a different spelling or filter", theme);
         }
@@ -186,7 +193,7 @@ pub fn render(
                 .collect();
             render_item_list(
                 &items,
-                "◉",
+                glyph(theme, Glyph::Album),
                 list.selected,
                 list_area,
                 buf,
@@ -202,7 +209,7 @@ pub fn render(
                 .collect();
             render_item_list(
                 &items,
-                "☺",
+                glyph(theme, Glyph::Artist),
                 list.selected,
                 list_area,
                 buf,
@@ -218,7 +225,7 @@ pub fn render(
                 .collect();
             render_item_list(
                 &items,
-                "≡",
+                glyph(theme, Glyph::Playlist),
                 list.selected,
                 list_area,
                 buf,
