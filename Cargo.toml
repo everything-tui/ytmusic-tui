@@ -17,9 +17,9 @@ path = "src/main.rs"
 anyhow = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 futures = "0.3"
-ratatui = { version = "0.29", features = ["all-widgets"] }
+ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 tui-input = "0.11"
 unicode-width = "0.2"
@@ -32,7 +32,7 @@ symphonia = { version = "0.5", features = ["aac", "isomp4", "mp3"] }
 ringbuf = "0.4"
 rustfft = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
-ratatui-image = "4"
+ratatui-image = { version = "4", default-features = false }
 color-thief = "0.2"
 sha1 = "0.10"
 hex = "0.4"
@@ -60,15 +60,72 @@ core-foundation = "0.10"
 [dev-dependencies]
 pretty_assertions = "1"
 
-# Dev: our crate builds unoptimized (fast incremental rebuilds), while dependencies
-# (audio decoding, FFT, image scaling) are optimized once and cached so playback is smooth.
-[profile.dev.package."*"]
+# Dev: keep our crate unoptimized for fast rebuilds; only optimize the hot
+# audio / FFT / image path so playback and cover art stay smooth while iterating.
+[profile.dev.package.rodio]
+opt-level = 3
+debug = false
+[profile.dev.package.cpal]
+opt-level = 3
+debug = false
+[profile.dev.package.dasp_sample]
+opt-level = 3
+debug = false
+[profile.dev.package.coreaudio-rs]
+opt-level = 3
+debug = false
+[profile.dev.package.symphonia]
+opt-level = 3
+debug = false
+[profile.dev.package.symphonia-core]
+opt-level = 3
+debug = false
+[profile.dev.package.symphonia-metadata]
+opt-level = 3
+debug = false
+[profile.dev.package.symphonia-codec-aac]
+opt-level = 3
+debug = false
+[profile.dev.package.symphonia-bundle-mp3]
+opt-level = 3
+debug = false
+[profile.dev.package.symphonia-format-isomp4]
+opt-level = 3
+debug = false
+[profile.dev.package.rustfft]
+opt-level = 3
+debug = false
+[profile.dev.package.primal-check]
+opt-level = 3
+debug = false
+[profile.dev.package.strength_reduce]
+opt-level = 3
+debug = false
+[profile.dev.package.transpose]
+opt-level = 3
+debug = false
+[profile.dev.package.num-complex]
+opt-level = 3
+debug = false
+[profile.dev.package.image]
+opt-level = 3
+debug = false
+[profile.dev.package.image-webp]
+opt-level = 3
+debug = false
+[profile.dev.package.png]
+opt-level = 3
+debug = false
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+debug = false
+[profile.dev.package.zune-core]
 opt-level = 3
 debug = false
 
-# Local release: parallel codegen + incremental so `--release` rebuilds take seconds.
+# Local release: parallel codegen; no incremental cache (saves hundreds of MB).
 [profile.release]
-incremental = true
+incremental = false
 codegen-units = 16
 lto = false
 debug = false

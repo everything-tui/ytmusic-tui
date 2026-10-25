@@ -41,6 +41,7 @@ pub struct Sidebar<'a> {
     pub library_section: Option<usize>,
     pub account: Option<&'a str>,
     pub signed_in: bool,
+    pub mcp_enabled: bool,
     pub track: Option<&'a Track>,
     pub cover: CoverCtx<'a>,
     pub visualizer: &'a Visualizer,
@@ -203,6 +204,12 @@ impl<'a> Sidebar<'a> {
             None => ("○ Guest · L to sign in".into(), theme.dim()),
         };
         footer.push((account, account_style, Some(Action::AccountMenu)));
+        let (mcp, mcp_style) = if self.mcp_enabled {
+            ("● MCP on", Style::default().fg(theme.success))
+        } else {
+            ("○ MCP off", theme.dim())
+        };
+        footer.push((mcp.into(), mcp_style, Some(Action::ToggleMcp)));
         let footer_h = footer.len() as u16;
         let footer_top = bottom.saturating_sub(footer_h + 2);
         if footer_top > nav_end {

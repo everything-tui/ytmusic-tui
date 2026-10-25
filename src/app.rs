@@ -173,6 +173,8 @@ pub struct App {
 
     /// Where the control bridge reads player state from (None when disabled).
     pub control: Option<crate::control::SharedSnapshot>,
+    control_handle: Option<crate::control::ControlHandle>,
+    pub control_action_tx: Option<mpsc::UnboundedSender<Action>>,
 
     cmd_tx: mpsc::UnboundedSender<Command>,
     player_cmd_tx: mpsc::UnboundedSender<PlayerCommand>,
@@ -244,6 +246,8 @@ impl App {
             hit: Default::default(),
             radio_requested_for: None,
             control: None,
+            control_handle: None,
+            control_action_tx: None,
             volume: config.playback.volume,
             autoplay: config.playback.autoplay,
             eq: crate::player::EqParams {
@@ -483,6 +487,14 @@ impl App {
             ("Log out", "logout"),
             ("Help", "help"),
             ("Equalizer", "equalizer"),
+            (
+                if self.control.is_some() {
+                    "Disable MCP"
+                } else {
+                    "Enable MCP"
+                },
+                "mcp",
+            ),
             ("Quit", "quit"),
         ];
         let q = match &self.overlay {
@@ -636,7 +648,10 @@ impl App {
                 let mut selected = *selected;
                 let actions = self.palette_actions();
                 match action {
-                    Action::CloseOverlay | Action::Escape => self.overlay = Overlay::None,
+                    Action::CloseOverlay | Action::Escape => {
+                        self.overlay = Overlay::None;
+                        return cmds;
+                    }
                     Action::PaletteInput(c) => {
                         query.push(c);
                         selected = 0;
@@ -814,6 +829,7 @@ impl App {
             Action::EqAdaptiveCycle => {
                 self.cycle_eq_adaptive();
             }
+            Action::ToggleMcp => self.toggle_control(),
             Action::CommandPalette => {
                 self.overlay = Overlay::CommandPalette {
                     query: String::new(),
@@ -1185,9 +1201,47 @@ impl App {
             "help" => self.overlay = Overlay::Help { scroll: 0 },
             "equalizer" => self.overlay = Overlay::Equalizer { selected: 0 },
             "quit" => self.should_quit = true,
+            "mcp" => self.toggle_control(),
             _ => {}
         }
         cmds
+    }
+
+    pub fn toggle_control(&mut self) {
+        let enable = self.control.is_none();
+        match self.set_control_enabled(enable) {
+            Ok(()) => {
+                self.config.control.enabled = enable;
+                let _ = self.config.save(&self.paths);
+                self.push_toast(Toast::info(if enable {
+                    "MCP bridge enabled"
+                } else {
+                    "MCP bridge disabled"
+                }));
+            }
+            Err(e) => self.push_toast(Toast::error(format!("MCP: {e}"))),
+        }
+    }
+
+    /// Start or stop the local control bridge without touching the saved config.
+    pub fn set_control_enabled(&mut self, enable: bool) -> anyhow::Result<()> {
+        if !enable {
+            self.control = None;
+            self.control_handle = None; // Drop stops the listener
+            return Ok(());
+        }
+        if self.control.is_some() {
+            return Ok(());
+        }
+        let tx = self
+            .control_action_tx
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("control channel unavailable"))?;
+        let (snapshot, handle) =
+            crate::control::start(&self.paths, self.player_cmd_tx.clone(), tx)?;
+        self.control = Some(snapshot);
+        self.control_handle = Some(handle);
+        Ok(())
     }
 
     fn apply_eq(&mut self, params: crate::player::EqParams) {

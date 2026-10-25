@@ -400,10 +400,25 @@ async fn serve_conn(ctx: Arc<Ctx>, token: Arc<String>, stream: tokio::net::TcpSt
 
 /// Starts the control listener. Returns the snapshot handle the UI should publish into
 /// and the receiver for actions it should apply.
+/// Keeps the bridge alive; dropping it stops the listener, drops open
+/// connections and removes the endpoint file.
+pub struct ControlHandle {
+    task: tokio::task::JoinHandle<()>,
+    file: std::path::PathBuf,
+}
+
+impl Drop for ControlHandle {
+    fn drop(&mut self) {
+        self.task.abort();
+        let _ = std::fs::remove_file(&self.file);
+    }
+}
+
 pub fn start(
     paths: &Paths,
     player_tx: mpsc::UnboundedSender<PlayerCommand>,
-) -> Result<(SharedSnapshot, mpsc::UnboundedReceiver<Action>)> {
+    action_tx: mpsc::UnboundedSender<Action>,
+) -> Result<(SharedSnapshot, ControlHandle)> {
     use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 
     let file = paths.control_file();
@@ -436,7 +451,6 @@ pub fn start(
         repeat: "off".into(),
         ..Default::default()
     }));
-    let (action_tx, action_rx) = mpsc::unbounded_channel();
     let ctx = Arc::new(Ctx {
         snapshot: snapshot.clone(),
         action_tx,
@@ -445,11 +459,13 @@ pub fn start(
         known: Mutex::new(HashMap::new()),
     });
 
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
+        // Owned by this task so aborting it also drops every open connection.
+        let mut conns = tokio::task::JoinSet::new();
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    tokio::spawn(serve_conn(ctx.clone(), token.clone(), stream));
+                    conns.spawn(serve_conn(ctx.clone(), token.clone(), stream));
                 }
                 Err(e) => {
                     tracing::warn!("control accept failed: {e}");
@@ -459,7 +475,7 @@ pub fn start(
         }
     });
     tracing::info!("control bridge listening on 127.0.0.1:{port}");
-    Ok((snapshot, action_rx))
+    Ok((snapshot, ControlHandle { task, file }))
 }
 
 /// Writes a file readable only by the current user (0600 on Unix; the per-user
@@ -478,9 +494,7 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub fn cleanup(paths: &Paths) {
-    let _ = std::fs::remove_file(paths.control_file());
-}
+
 
 #[cfg(test)]
 mod tests {
@@ -519,7 +533,8 @@ mod tests {
     async fn routes_commands() {
         let (_dir, paths) = temp_paths();
         let (player_tx, mut player_rx) = mpsc::unbounded_channel();
-        let (snapshot, mut action_rx) = start(&paths, player_tx).unwrap();
+        let (action_tx, mut action_rx) = mpsc::unbounded_channel();
+        let (snapshot, _handle) = start(&paths, player_tx, action_tx).unwrap();
         let ep = Endpoint::load(&paths).unwrap();
 
         let r = roundtrip(&ep, json!({"cmd": "pause"})).await;
@@ -562,7 +577,8 @@ mod tests {
     async fn rejects_missing_or_wrong_token() {
         let (_dir, paths) = temp_paths();
         let (player_tx, _player_rx) = mpsc::unbounded_channel();
-        let (_snapshot, mut action_rx) = start(&paths, player_tx).unwrap();
+        let (action_tx, mut action_rx) = mpsc::unbounded_channel();
+        let (_snapshot, _handle) = start(&paths, player_tx, action_tx).unwrap();
         let ep = Endpoint::load(&paths).unwrap();
 
         for first in [
@@ -586,8 +602,9 @@ mod tests {
     async fn second_instance_is_refused_and_stale_file_replaced() {
         let (_dir, paths) = temp_paths();
         let (tx, _rx) = mpsc::unbounded_channel();
-        let _first = start(&paths, tx.clone()).unwrap();
-        assert!(start(&paths, tx.clone()).is_err());
+        let (action_tx, _action_rx) = mpsc::unbounded_channel();
+        let _first = start(&paths, tx.clone(), action_tx.clone()).unwrap();
+        assert!(start(&paths, tx.clone(), action_tx.clone()).is_err());
 
         // A leftover file pointing at a dead port is replaced.
         let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -598,6 +615,6 @@ mod tests {
             json!({"port": dead_port, "token": "x"}).to_string(),
         )
         .unwrap();
-        assert!(start(&paths, tx).is_ok());
+        assert!(start(&paths, tx, action_tx).is_ok());
     }
 }

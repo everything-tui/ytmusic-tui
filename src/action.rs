@@ -22,6 +22,7 @@ pub enum Action {
     Help,
     CloseOverlay,
     CommandPalette,
+    ToggleMcp,
     Escape,
     /// Open the equalizer overlay.
     OpenEqualizer,

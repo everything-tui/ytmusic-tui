@@ -109,6 +109,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
                     .then_some(app.library_section),
                 account: app.account_name.as_deref(),
                 signed_in: app.signed_in,
+                mcp_enabled: app.control.is_some(),
                 track: app.current_track(),
                 cover: current_cover,
                 visualizer: &app.visualizer,

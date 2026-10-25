@@ -417,15 +417,13 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
         account_name,
     );
 
-    // Optional control bridge (MCP): opt-in via `[control] enabled = true`.
-    let mut control_rx = None;
+    // Optional control bridge (MCP): opt-in via `[control] enabled = true`,
+    // also toggleable at runtime from the command palette.
+    let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel();
+    app.control_action_tx = Some(control_tx);
     if control_enabled {
-        match control::start(&paths, player_cmd_tx.clone()) {
-            Ok((snapshot, rx)) => {
-                app.control = Some(snapshot);
-                control_rx = Some(rx);
-            }
-            Err(e) => tracing::warn!("control bridge disabled: {e}"),
+        if let Err(e) = app.set_control_enabled(true) {
+            tracing::warn!("control bridge disabled: {e}");
         }
     }
 
@@ -451,12 +449,8 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
             viz_samples_ui.snapshot(out);
         });
 
-    let control_started = control_rx.is_some();
-    let result = run_ui(app, event_rx, cmd_tx, media, sample_provider, control_rx).await;
-    if control_started {
-        // Only remove the socket if this instance bound it.
-        control::cleanup(&paths);
-    }
+    // Dropping the app drops its ControlHandle, which removes the endpoint file.
+    let result = run_ui(app, event_rx, cmd_tx, media, sample_provider, Some(control_rx)).await;
 
     let _ = player_cmd_tx.send(PlayerCommand::Shutdown);
     let _ = player_handle.await;
