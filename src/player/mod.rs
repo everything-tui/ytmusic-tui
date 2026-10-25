@@ -16,7 +16,7 @@ use crate::paths::Paths;
 use crate::player::download::Downloader;
 use crate::player::engine::{EngineCmd, EngineHandle};
 use crate::player::queue::{PreviousResult, Queue, RepeatMode};
-use crate::player::resolver::Resolver;
+use crate::player::resolver::{Resolver, Unplayable};
 use crate::player::source::{open_decoder_resilient, CancelToken, GrowingFile, SymphoniaSource};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -36,7 +36,6 @@ pub enum PlaybackState {
 pub struct PlayerService {
     pub queue: Queue,
     pub state: PlaybackState,
-    pub position: Duration,
     pub duration: Option<Duration>,
     pub volume: f32,
     pub muted: bool,
@@ -86,7 +85,6 @@ impl PlayerService {
         Self {
             queue: Queue::default(),
             state: PlaybackState::Stopped,
-            position: Duration::ZERO,
             duration: None,
             volume,
             muted: false,
@@ -164,7 +162,7 @@ impl PlayerService {
         self.engine.send(EngineCmd::Unload);
         self.current = Some(track.clone());
         self.state = PlaybackState::Loading;
-        self.position = start;
+        self.set_position(start);
         self.duration = track.duration;
         // Show the new track right away, not only once its audio is ready.
         let _ = self.event_tx.send(AppEvent::Player(PlayerEvent::Loading {
@@ -299,10 +297,20 @@ impl PlayerService {
         self.play_epoch.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    /// Where playback is — the engine tracks the loaded stream; before that it
+    /// holds the start/restore position.
+    fn position(&self) -> Duration {
+        *self.engine.position.lock().unwrap()
+    }
+
+    fn set_position(&self, pos: Duration) {
+        *self.engine.position.lock().unwrap() = pos;
+    }
+
     /// Resume playback; starts a restored session's track at its saved position.
     pub fn resume(&mut self) {
         if self.restored_pending {
-            self.start_current(self.position);
+            self.start_current(self.position());
         } else {
             self.engine.send(EngineCmd::Play);
         }
@@ -310,7 +318,7 @@ impl PlayerService {
 
     pub fn toggle(&mut self) {
         if self.restored_pending {
-            self.start_current(self.position);
+            self.start_current(self.position());
             return;
         }
         match self.state {
@@ -324,7 +332,7 @@ impl PlayerService {
             }
             PlaybackState::Stopped => {
                 if self.queue.current().is_some() {
-                    self.start_current(self.position);
+                    self.start_current(self.position());
                 }
             }
             _ => {
@@ -349,11 +357,8 @@ impl PlayerService {
     }
 
     pub fn previous(&mut self) {
-        match self.queue.previous(self.position.as_secs_f64()) {
-            PreviousResult::Restart => {
-                self.engine.send(EngineCmd::Seek(Duration::ZERO));
-                self.position = Duration::ZERO;
-            }
+        match self.queue.previous(self.position().as_secs_f64()) {
+            PreviousResult::Restart => self.seek(Duration::ZERO),
             PreviousResult::Track => {
                 self.start_current(Duration::ZERO);
             }
@@ -362,12 +367,13 @@ impl PlayerService {
     }
 
     pub fn seek(&mut self, pos: Duration) {
-        self.position = pos;
+        // Set eagerly so rapid relative seeks stack instead of reading a stale base.
+        self.set_position(pos);
         self.engine.send(EngineCmd::Seek(pos));
     }
 
     pub fn seek_relative(&mut self, delta: i64) {
-        let ms = self.position.as_millis() as i64 + delta * 1000;
+        let ms = self.position().as_millis() as i64 + delta * 1000;
         let ms = ms.max(0) as u64;
         let mut pos = Duration::from_millis(ms);
         if let Some(d) = self.duration {
@@ -444,7 +450,7 @@ impl PlayerService {
         repeat: RepeatMode,
     ) {
         self.queue = Queue::from_session(tracks, index, shuffle, repeat);
-        self.position = position;
+        self.set_position(position);
         self.state = PlaybackState::Paused;
         self.restored_pending = self.queue.current().is_some();
         self.current = self.queue.current().cloned();
@@ -529,6 +535,14 @@ async fn resolve_download(
                     }),
                 );
                 // #endregion
+                if let Some(reason) = e.downcast_ref::<Unplayable>() {
+                    if alive() {
+                        let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
+                            "Couldn't play {title} ({reason}) — skipping"
+                        ))));
+                    }
+                    return None;
+                }
                 if attempt < 2 {
                     warn!("resolve failed for {title}: {e}, retrying…");
                     resolver.invalidate(video_id).await;

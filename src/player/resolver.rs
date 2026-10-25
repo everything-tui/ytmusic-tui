@@ -66,6 +66,41 @@ const LAST_RESORT_ITAG: i64 = 139;
 /// Progressive muxed mp4 (H.264 + AAC) — works without PO on some clients.
 const PROGRESSIVE_ITAG: i64 = 18;
 
+/// YouTube refused the video for every client — retrying won't help.
+#[derive(Debug)]
+pub struct Unplayable(pub &'static str);
+
+impl std::fmt::Display for Unplayable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Unplayable {}
+
+/// Classify per-client errors as a permanent refusal. Bot checks and
+/// "reload" errors are transient and stay retryable.
+///
+/// Premium-only and age-gated tracks do play for a signed-in Premium account,
+/// but only via WEB_REMIX, whose URLs are signature-ciphered (needs the player
+/// JS) — none of our plaintext clients honor the session.
+fn unplayable_reason(errors: &[String]) -> Option<&'static str> {
+    let any = |needle: &str| errors.iter().any(|e| e.contains(needle));
+    if any("Music Premium") {
+        Some("Premium-only stream, not supported yet")
+    } else if any("confirm your age") {
+        Some("age-restricted, not supported yet")
+    } else if !errors.is_empty()
+        && errors
+            .iter()
+            .all(|e| e.contains("not available") || e.contains("unavailable"))
+    {
+        Some("not available on YouTube")
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ResolvedStream {
     pub url: String,
@@ -218,6 +253,7 @@ impl Resolver {
 
     async fn resolve_uncached(&self, video_id: &str) -> Result<ResolvedStream> {
         let mut last_err: Option<anyhow::Error> = None;
+        let mut errors: Vec<String> = Vec::new();
         let mut retried_visitor = false;
         let skipped = self
             .skip_clients
@@ -243,17 +279,22 @@ impl Resolver {
                             Ok(stream) => return Ok(stream),
                             Err(e2) => {
                                 warn!("{} after visitor refresh: {e2}", client.name);
+                                errors.push(e2.to_string());
                                 last_err = Some(e2);
                                 continue;
                             }
                         }
                     }
                     warn!("{} failed for {video_id}: {e}", client.name);
+                    errors.push(msg);
                     last_err = Some(e);
                 }
             }
         }
 
+        if let Some(reason) = unplayable_reason(&errors) {
+            return Err(Unplayable(reason).into());
+        }
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no player client succeeded")))
     }
 
@@ -650,6 +691,39 @@ mod tests {
         );
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
         serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {path}: {e}"))
+    }
+
+    #[test]
+    fn classifies_permanent_refusals() {
+        let e = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            unplayable_reason(&e(&[
+                "UNPLAYABLE: This video is only available to Music Premium members",
+                "ERROR: This video is unavailable",
+            ])),
+            Some("Premium-only stream, not supported yet")
+        );
+        assert_eq!(
+            unplayable_reason(&e(&[
+                "LOGIN_REQUIRED: Sign in to confirm your age",
+                "ERROR: This video is unavailable",
+            ])),
+            Some("age-restricted, not supported yet")
+        );
+        assert_eq!(
+            unplayable_reason(&e(&[
+                "UNPLAYABLE: This video is not available",
+                "ERROR: This video is unavailable",
+            ])),
+            Some("not available on YouTube")
+        );
+        assert_eq!(
+            unplayable_reason(&e(&[
+                "LOGIN_REQUIRED: Sign in to confirm you’re not a bot",
+                "ERROR: This video is unavailable",
+            ])),
+            None
+        );
     }
 
     #[test]

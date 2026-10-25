@@ -1,12 +1,12 @@
 use crate::action::PlayerEvent;
 use crate::api::model::Track;
 use crate::player::eq::{EqHandle, EqParams, EqSource};
-use crate::player::source::{CancelToken, GrowingFile, SymphoniaSource};
+use crate::player::source::{CancelToken, GrowingFile, StreamControl, SymphoniaSource};
 use crossbeam_channel::{Receiver, Sender};
 use rodio::{OutputStream, Sink, Source};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::error;
 
 pub enum EngineCmd {
     /// Decoder is opened by the caller: probing waits on the download, and the
@@ -73,6 +73,8 @@ impl SampleBuffer {
 
 pub struct EngineHandle {
     pub cmd_tx: Sender<EngineCmd>,
+    /// Playback position of the loaded stream, kept current by the engine.
+    pub position: Arc<Mutex<Duration>>,
     pub samples: SampleBuffer,
     pub eq: EqHandle,
 }
@@ -92,17 +94,24 @@ impl EngineHandle {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
         let samples_thread = samples.clone();
         let eq_thread = eq.clone();
+        let position = Arc::new(Mutex::new(Duration::ZERO));
+        let position_thread = position.clone();
 
         std::thread::Builder::new()
             .name("yt-tui-audio".into())
             .spawn(move || {
-                if let Err(e) = run_engine(cmd_rx, event_tx, samples_thread, eq_thread) {
+                if let Err(e) = run_engine(cmd_rx, event_tx, samples_thread, eq_thread, position_thread) {
                     error!("audio engine exited: {e}");
                 }
             })
             .expect("spawn audio thread");
 
-        Self { cmd_tx, samples, eq }
+        Self {
+            cmd_tx,
+            position,
+            samples,
+            eq,
+        }
     }
 
     pub fn send(&self, cmd: EngineCmd) {
@@ -119,6 +128,7 @@ fn run_engine(
     event_tx: Sender<PlayerEvent>,
     samples: SampleBuffer,
     eq: EqHandle,
+    sink_pos: Arc<Mutex<Duration>>,
 ) -> anyhow::Result<()> {
     let (_stream, handle) = OutputStream::try_default()?;
     let sink = Sink::try_new(&handle)?;
@@ -127,7 +137,7 @@ fn run_engine(
     let mut current_track: Option<Track> = None;
     let mut current_file: Option<Arc<GrowingFile>> = None;
     let mut current_cancel: Option<CancelToken> = None;
-    let sink_pos = Arc::new(Mutex::new(Duration::ZERO));
+    let mut current_ctl: Option<StreamControl> = None;
     let playing = Arc::new(Mutex::new(false));
 
     let event_tx2 = event_tx.clone();
@@ -149,7 +159,7 @@ fn run_engine(
             Ok(EngineCmd::Load {
                 track,
                 file,
-                source,
+                mut source,
                 start,
                 volume,
                 cancel,
@@ -162,13 +172,16 @@ fn run_engine(
                 current_file = Some(file);
                 current_cancel = Some(cancel);
                 let decoded_dur = source.total_duration();
+                source.set_duration_hint(track.duration);
+                let ctl = source.control();
+                if start > Duration::ZERO {
+                    ctl.seek(start);
+                }
+                current_ctl = Some(ctl);
                 let eqd = EqSource::new(source, eq.clone());
                 let tapped = DirectTap::new(eqd, samples.clone());
                 sink.append(tapped);
                 sink.set_volume(volume * volume);
-                if start > Duration::ZERO {
-                    let _ = sink.try_seek(start);
-                }
                 sink.play();
                 *playing.lock().unwrap() = true;
                 let mut track = track;
@@ -205,8 +218,9 @@ fn run_engine(
                 }
             }
             Ok(EngineCmd::Seek(pos)) => {
-                if let Err(e) = sink.try_seek(pos) {
-                    info!("seek failed: {e}");
+                // Applied by the source on the audio thread; never blocks here.
+                if let Some(ctl) = &current_ctl {
+                    ctl.seek(pos);
                 }
                 *sink_pos.lock().unwrap() = pos;
                 let _ = event_tx.send(PlayerEvent::Position(pos));
@@ -220,6 +234,7 @@ fn run_engine(
             }
             Ok(cmd @ (EngineCmd::Stop | EngineCmd::Unload)) => {
                 halt(&sink, &mut current_cancel);
+                current_ctl = None;
                 *playing.lock().unwrap() = false;
                 current_track = None;
                 current_file = None;
@@ -238,8 +253,9 @@ fn run_engine(
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
         }
 
-        let pos = sink.get_pos();
-        *sink_pos.lock().unwrap() = pos;
+        if let Some(ctl) = &current_ctl {
+            *sink_pos.lock().unwrap() = ctl.position();
+        }
 
         if last_empty_check.elapsed() > Duration::from_millis(200) {
             last_empty_check = std::time::Instant::now();

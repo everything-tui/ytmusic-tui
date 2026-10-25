@@ -451,6 +451,41 @@ impl symphonia::core::io::MediaSource for GrowingFileReader {
     }
 }
 
+/// Bytes of slack past a seek target's estimated offset before the seek is
+/// attempted (~4s of 128 kbps AAC), so it rarely blocks on the download.
+const SEEK_MARGIN_BYTES: u64 = 64 * 1024;
+
+#[derive(Default)]
+struct StreamControlInner {
+    seek: Mutex<Option<Duration>>,
+    position_ms: AtomicU64,
+}
+
+/// Shared between the engine and a playing [`SymphoniaSource`]: seek requests
+/// go in (latest wins), the playback position comes out. Seeks run on the audio
+/// thread, so the engine never blocks the way `Sink::try_seek` does.
+#[derive(Clone, Default)]
+pub struct StreamControl(Arc<StreamControlInner>);
+
+impl StreamControl {
+    pub fn seek(&self, pos: Duration) {
+        *self.0.seek.lock() = Some(pos);
+        self.set_position(pos);
+    }
+
+    pub fn position(&self) -> Duration {
+        Duration::from_millis(self.0.position_ms.load(Ordering::Relaxed))
+    }
+
+    fn set_position(&self, pos: Duration) {
+        self.0.position_ms.store(pos.as_millis() as u64, Ordering::Relaxed);
+    }
+
+    fn take_seek(&self) -> Option<Duration> {
+        self.0.seek.lock().take()
+    }
+}
+
 /// Symphonia-backed audio source. Avoids `rodio::Decoder`, which wraps readers in a
 /// MediaSource that is always seekable but never reports `byte_len` — that combination
 /// panics inside rodio on YouTube's DASH/fMP4 streams.
@@ -463,6 +498,15 @@ pub struct SymphoniaSource {
     cursor: usize,
     total_duration: Option<Duration>,
     exhausted: bool,
+    file: Arc<(Mutex<GrowingState>, Condvar)>,
+    time_base: Option<symphonia::core::units::TimeBase>,
+    ctl: StreamControl,
+    /// Track length used to map a seek target to a byte offset.
+    duration_hint: Option<Duration>,
+    /// Seek waiting for its bytes to download; silence plays meanwhile.
+    pending_seek: Option<Duration>,
+    /// Samples left before the pending seek is checked again.
+    recheck_in: u32,
 }
 
 impl SymphoniaSource {
@@ -477,6 +521,7 @@ impl SymphoniaSource {
         // download is finished. Progressive DASH still advertises seekability via
         // MediaSource when `expected` length is known (see GrowingFileReader).
         let gapless = reader.is_fully_buffered();
+        let file = reader.inner.clone();
         let probing = reader.probing.clone();
         probing.store(true, Ordering::SeqCst);
         let mss = MediaSourceStream::new(Box::new(reader), Default::default());
@@ -537,6 +582,12 @@ impl SymphoniaSource {
             cursor: 0,
             total_duration,
             exhausted: false,
+            file,
+            time_base: track.codec_params.time_base,
+            ctl: StreamControl::default(),
+            duration_hint: total_duration,
+            pending_seek: None,
+            recheck_in: 0,
         };
         // Prime the first buffer so channels()/sample_rate() are accurate for rodio.
         if source.fill_buf().is_err() {
@@ -574,6 +625,11 @@ impl SymphoniaSource {
                         symphonia::core::audio::SampleBuffer::<f32>::new(frames, self.spec);
                     buf.copy_interleaved_ref(audio);
                     self.sample_buf = Some(buf);
+                    if let Some(tb) = self.time_base {
+                        let t = tb.calc_time(packet.ts());
+                        self.ctl
+                            .set_position(Duration::new(t.seconds, (t.frac * 1e9) as u32));
+                    }
                     return Ok(());
                 }
                 Err(SymError::DecodeError(_)) => continue,
@@ -583,10 +639,85 @@ impl SymphoniaSource {
     }
 }
 
+impl SymphoniaSource {
+    pub fn control(&self) -> StreamControl {
+        self.ctl.clone()
+    }
+
+    pub fn set_duration_hint(&mut self, duration: Option<Duration>) {
+        if duration.is_some() {
+            self.duration_hint = duration;
+        }
+    }
+
+    /// Whether the bytes for `target` are (estimated to be) downloaded. Audio is
+    /// near-CBR, so the offset scales with time; unknown sizes just try.
+    fn seek_ready(&self, target: Duration) -> bool {
+        let g = self.file.0.lock();
+        if g.complete {
+            return true;
+        }
+        let (Some(total), Some(dur)) = (g.expected, self.duration_hint) else {
+            return true;
+        };
+        if dur.is_zero() {
+            return true;
+        }
+        let frac = (target.as_secs_f64() / dur.as_secs_f64()).clamp(0.0, 1.0);
+        let need = ((total as f64 * frac) as u64 + SEEK_MARGIN_BYTES).min(total);
+        g.len >= need
+    }
+
+    fn apply_seek(&mut self, pos: Duration) {
+        use symphonia::core::formats::{SeekMode, SeekTo};
+        use symphonia::core::units::Time;
+
+        let time = Time {
+            seconds: pos.as_secs(),
+            frac: f64::from(pos.subsec_nanos()) / 1_000_000_000.0,
+        };
+        let res = self.format.seek(
+            SeekMode::Accurate,
+            SeekTo::Time {
+                time,
+                track_id: Some(self.track_id),
+            },
+        );
+        if let Err(e) = res {
+            tracing::debug!("symphonia seek failed: {e}");
+            return;
+        }
+        self.decoder.reset();
+        self.exhausted = false;
+        self.ctl.set_position(pos);
+        if let Err(e) = self.fill_buf() {
+            tracing::warn!("audio stream ended after seek: {e}");
+            self.exhausted = true;
+        }
+    }
+}
+
 impl Iterator for SymphoniaSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(target) = self.pending_seek {
+            if self.recheck_in > 0 {
+                self.recheck_in -= 1;
+                return Some(0.0);
+            }
+            if let Some(newer) = self.ctl.take_seek() {
+                self.pending_seek = Some(newer);
+                return self.next();
+            }
+            if !self.seek_ready(target) {
+                // ~10ms at 48kHz stereo between checks.
+                self.recheck_in = 1024;
+                return Some(0.0);
+            }
+            self.pending_seek = None;
+            self.apply_seek(target);
+        }
         if self.exhausted {
             return None;
         }
@@ -598,6 +729,14 @@ impl Iterator for SymphoniaSource {
                     self.cursor += 1;
                     return Some(s);
                 }
+            }
+            // Packet boundary: pick up seeks posted by the engine.
+            if let Some(target) = self.ctl.take_seek() {
+                self.pending_seek = Some(target);
+                self.sample_buf = None;
+                self.cursor = 0;
+                self.recheck_in = 0;
+                return self.next();
             }
             match self.fill_buf() {
                 Ok(()) if self.exhausted => return None,
@@ -628,31 +767,7 @@ impl Source for SymphoniaSource {
         self.total_duration
     }
     fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
-        use symphonia::core::formats::{SeekMode, SeekTo};
-        use symphonia::core::units::Time;
-
-        let seconds = pos.as_secs();
-        let frac = f64::from(pos.subsec_nanos()) / 1_000_000_000.0;
-        let time = Time { seconds, frac };
-        self.format
-            .seek(
-                SeekMode::Accurate,
-                SeekTo::Time {
-                    time,
-                    track_id: Some(self.track_id),
-                },
-            )
-            .map_err(|e| {
-                tracing::debug!("symphonia seek failed: {e}");
-                rodio::source::SeekError::NotSupported {
-                    underlying_source: "SymphoniaSource",
-                }
-            })?;
-        self.decoder.reset();
-        self.sample_buf = None;
-        self.cursor = 0;
-        self.exhausted = false;
-        let _ = self.fill_buf();
+        self.ctl.seek(pos);
         Ok(())
     }
 }
@@ -765,6 +880,42 @@ mod decode_tests {
         cancel.cancel();
         let n = res.expect("open blocked waiting for the whole file").unwrap();
         assert!(n > 0);
+    }
+
+    #[test]
+    fn seek_past_download_plays_silence_then_applies() {
+        let path = sample_path();
+        if !path.exists() {
+            return;
+        }
+        let data = std::fs::read(&path).unwrap();
+        let dir = std::env::temp_dir().join("yt-tui-seek-ahead");
+        let gf = GrowingFile::create(&dir.join("seek.m4a")).unwrap();
+        let head = data.len().min(200 * 1024);
+        gf.append(&data[..head]).unwrap();
+        gf.set_expected_len(data.len() as u64);
+
+        let mut src = open_decoder(gf.clone(), &CancelToken::default()).unwrap();
+        let dur = src.total_duration().unwrap_or(Duration::from_secs(180));
+        src.set_duration_hint(Some(dur));
+        let target = dur.mul_f64(0.8);
+        let ctl = src.control();
+        ctl.seek(target);
+
+        // Target isn't downloaded: must not block, only silence.
+        let silent = src.by_ref().take(4_096).all(|s| s == 0.0);
+        assert!(silent);
+        assert_eq!(ctl.position().as_secs(), target.as_secs());
+
+        gf.append(&data[head..]).unwrap();
+        gf.mark_complete();
+        let n = src.by_ref().take(20_000).filter(|s| *s != 0.0).count();
+        assert!(n > 0, "no audio after seek applied");
+        let pos = ctl.position();
+        assert!(
+            pos + Duration::from_secs(2) >= target && pos <= target + Duration::from_secs(2),
+            "position {pos:?} not near {target:?}"
+        );
     }
 
     #[test]
