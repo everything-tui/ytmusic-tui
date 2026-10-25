@@ -9,6 +9,8 @@ use tracing::{debug, warn};
 const BASE: &str = "https://music.youtube.com/youtubei/v1";
 /// Public WEB_REMIX key used by the YouTube Music web client / ytmusicapi.
 const INNERTUBE_API_KEY: &str = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30";
+/// Upper bound on follow-up pages per list (~100 rows each), so a huge library can't stall.
+const MAX_CONTINUATION_PAGES: usize = 100;
 
 #[derive(Clone)]
 pub struct InnertubeClient {
@@ -75,12 +77,24 @@ impl InnertubeClient {
         })
     }
 
-    async fn post(&self, endpoint: &str, mut body: Value) -> Result<Value> {
+    async fn post(&self, endpoint: &str, body: Value) -> Result<Value> {
+        self.post_with_query(endpoint, body, &[]).await
+    }
+
+    async fn post_with_query(
+        &self,
+        endpoint: &str,
+        mut body: Value,
+        query: &[(&str, &str)],
+    ) -> Result<Value> {
         body.as_object_mut()
             .context("body object")?
             .insert("context".into(), Self::context());
 
-        let url = format!("{BASE}/{endpoint}?prettyPrint=false&key={INNERTUBE_API_KEY}");
+        let mut url = url::Url::parse(&format!(
+            "{BASE}/{endpoint}?prettyPrint=false&key={INNERTUBE_API_KEY}"
+        ))?;
+        url.query_pairs_mut().extend_pairs(query);
         let cookies = self.cookies();
         let visitor_id = self.visitor_id.lock().unwrap().clone();
         let user_session_id = self.user_session_id.lock().unwrap().clone();
@@ -88,7 +102,7 @@ impl InnertubeClient {
 
         let mut req = self
             .http
-            .post(&url)
+            .post(url)
             .header("Origin", "https://music.youtube.com")
             .header("X-Origin", "https://music.youtube.com")
             .header("Referer", "https://music.youtube.com/")
@@ -203,22 +217,95 @@ impl InnertubeClient {
         };
         let body = json!({ "browseId": browse_id });
         let json = self.post("browse", body).await?;
-        parse_playlist(&json, playlist_id)
+        self.full_playlist(&json, playlist_id).await
+    }
+
+    /// Parses a playlist page and appends every further page of tracks.
+    async fn full_playlist(&self, json: &Value, id: &str) -> Result<Playlist> {
+        let mut pl = parse_playlist(json, id)?;
+        // Only follow the track shelf's token, not the "related" section's.
+        let shelf = find_key(json, "musicPlaylistShelfRenderer")
+            .or_else(|| find_key(json, "playlistVideoListRenderer"));
+        let token = shelf.and_then(continuation_token);
+        for page in self.browse_continuations(token).await {
+            visit_contents(&page, &mut |item| {
+                if let Some(t) = parse_flexible_track(item) {
+                    pl.tracks.push(t);
+                }
+            });
+        }
+        let mut seen = std::collections::HashSet::new();
+        pl.tracks.retain(|t| seen.insert(t.video_id.clone()));
+        pl.track_count = Some(pl.tracks.len() as u32);
+        Ok(pl)
+    }
+
+    /// Fetches the pages after `token`, following each page's own token.
+    /// Failures end the walk early so the caller still gets what loaded.
+    async fn browse_continuations(&self, mut token: Option<Continuation>) -> Vec<Value> {
+        let mut pages = Vec::new();
+        while let Some(c) = token.take() {
+            if pages.len() >= MAX_CONTINUATION_PAGES {
+                warn!("stopping after {MAX_CONTINUATION_PAGES} continuation pages");
+                break;
+            }
+            let resp = match c {
+                // Newer responses take the token in the body…
+                Continuation::Command(t) => {
+                    self.post("browse", json!({ "continuation": t })).await
+                }
+                // …older `nextContinuationData` ones as query parameters.
+                Continuation::Next(t) => {
+                    self.post_with_query(
+                        "browse",
+                        json!({}),
+                        &[("ctoken", &t), ("continuation", &t), ("type", "next")],
+                    )
+                    .await
+                }
+            };
+            match resp {
+                Ok(page) => {
+                    token = continuation_token(&page);
+                    pages.push(page);
+                }
+                Err(e) => {
+                    warn!("continuation page failed: {e:#}");
+                    break;
+                }
+            }
+        }
+        pages
+    }
+
+    /// First page plus every continuation page of a library browse.
+    async fn browse_all(&self, browse_id: &str, what: &str) -> Result<Vec<Value>> {
+        let json = self.post("browse", json!({ "browseId": browse_id })).await?;
+        self.require_signed_in(&json, what)?;
+        let token = continuation_token(&json);
+        let mut pages = vec![json];
+        pages.extend(self.browse_continuations(token).await);
+        Ok(pages)
     }
 
     pub async fn liked_songs(&self) -> Result<Vec<Track>> {
         let body = json!({ "browseId": "VLLM" });
         let json = self.post("browse", body).await?;
         self.require_signed_in(&json, "liked songs")?;
-        let pl = parse_playlist(&json, "LM")?;
+        let pl = self.full_playlist(&json, "LM").await?;
         Ok(pl.tracks)
     }
 
     pub async fn library_playlists(&self) -> Result<Vec<Playlist>> {
-        let body = json!({ "browseId": "FEmusic_liked_playlists" });
-        let json = self.post("browse", body).await?;
-        self.require_signed_in(&json, "library playlists")?;
-        let mut playlists = parse_library_playlists(&json);
+        let mut playlists = Vec::new();
+        for page in self
+            .browse_all("FEmusic_liked_playlists", "library playlists")
+            .await?
+        {
+            playlists.extend(parse_library_playlists(&page));
+        }
+        let mut seen = std::collections::HashSet::new();
+        playlists.retain(|p| seen.insert(p.id.clone()));
         // YouTube lists "Liked Music" with a generated icon or no artwork at all, so
         // always use the cover of the most recently liked song instead.
         let is_liked = |p: &Playlist| {
@@ -251,17 +338,15 @@ impl InnertubeClient {
     }
 
     pub async fn library_albums(&self) -> Result<Vec<Album>> {
-        let body = json!({ "browseId": "FEmusic_liked_albums" });
-        let json = self.post("browse", body).await?;
-        self.require_signed_in(&json, "library albums")?;
-        Ok(parse_library_albums(&json))
+        let pages = self.browse_all("FEmusic_liked_albums", "library albums").await?;
+        Ok(pages.iter().flat_map(parse_library_albums).collect())
     }
 
     pub async fn library_artists(&self) -> Result<Vec<Artist>> {
-        let body = json!({ "browseId": "FEmusic_library_corpus_track_artists" });
-        let json = self.post("browse", body).await?;
-        self.require_signed_in(&json, "library artists")?;
-        Ok(parse_library_artists(&json))
+        let pages = self
+            .browse_all("FEmusic_library_corpus_track_artists", "library artists")
+            .await?;
+        Ok(pages.iter().flat_map(parse_library_artists).collect())
     }
 
     pub async fn history(&self) -> Result<Vec<Track>> {
@@ -1120,6 +1205,28 @@ fn visit_carousels(json: &Value, f: &mut dyn FnMut(String, Vec<ShelfItem>)) {
         }
         _ => {}
     }
+}
+
+/// A "load more" token from a browse response.
+#[derive(Debug, PartialEq)]
+enum Continuation {
+    /// `continuationItemRenderer.continuationEndpoint.continuationCommand.token`
+    Command(String),
+    /// `continuations[].nextContinuationData.continuation`
+    Next(String),
+}
+
+fn continuation_token(v: &Value) -> Option<Continuation> {
+    if let Some(t) = find_key(v, "continuationCommand")
+        .and_then(|c| c.get("token"))
+        .and_then(Value::as_str)
+    {
+        return Some(Continuation::Command(t.to_string()));
+    }
+    find_key(v, "nextContinuationData")
+        .and_then(|c| c.get("continuation"))
+        .and_then(Value::as_str)
+        .map(|t| Continuation::Next(t.to_string()))
 }
 
 fn find_key<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {

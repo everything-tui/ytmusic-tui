@@ -23,6 +23,8 @@ use tokio::sync::mpsc;
 
 /// Window in which a second Ctrl+C confirms quit.
 const CTRL_C_QUIT_WINDOW: Duration = Duration::from_secs(2);
+/// How long a library section is reused before it is re-synced with YouTube.
+const LIBRARY_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
@@ -139,8 +141,8 @@ pub struct App {
     pub library_artists: Vec<Artist>,
     pub history: Vec<Track>,
     pub loading_library: bool,
-    /// Which library sections already have a successful fetch this session.
-    library_fetched: [bool; 5],
+    /// When each library section was last fetched; `None` = never, or invalidated by an edit.
+    library_fetched: [Option<Instant>; 5],
     pub loading_detail: bool,
 
     pub lyrics: Option<Lyrics>,
@@ -302,7 +304,7 @@ impl App {
             library_artists: Vec::new(),
             history: Vec::new(),
             loading_library: false,
-            library_fetched: [false; 5],
+            library_fetched: [None; 5],
             loading_detail: false,
             lyrics: None,
             list_state: TrackListState::default(),
@@ -1396,14 +1398,14 @@ impl App {
             return;
         }
         let section = self.library_section.min(4);
-        // Reuse cached section data — re-fetching on every ←/→ made Library feel stuck.
-        if self.library_fetched[section] {
+        self.list_state = TrackListState::default();
+        // Reuse recent section data — re-fetching on every ←/→ made Library feel stuck.
+        if self.library_fetched[section].is_some_and(|at| at.elapsed() < LIBRARY_TTL) {
             self.loading_library = false;
-            self.list_state = TrackListState::default();
             return;
         }
-        self.loading_library = true;
-        self.list_state = TrackListState::default();
+        // Stale data stays on screen while it re-syncs; only an empty section shows loading.
+        self.loading_library = self.library_len(section) == 0;
         match section {
             0 => cmds.push(Command::LoadLikedSongs),
             1 => cmds.push(Command::LoadLibraryPlaylists),
@@ -1411,6 +1413,42 @@ impl App {
             3 => cmds.push(Command::LoadLibraryArtists),
             4 => cmds.push(Command::LoadHistory),
             _ => {}
+        }
+    }
+
+    fn library_len(&self, section: usize) -> usize {
+        match section {
+            0 => self.liked_songs.len(),
+            1 => self.library_playlists.len(),
+            2 => self.library_albums.len(),
+            3 => self.library_artists.len(),
+            4 => self.history.len(),
+            _ => 0,
+        }
+    }
+
+    fn library_section_visible(&self, section: usize) -> bool {
+        self.tab == Tab::Library && self.detail.is_none() && self.library_section.min(4) == section
+    }
+
+    /// Records a finished section fetch, keeping the selection in range of the new list.
+    fn library_loaded(&mut self, section: usize) {
+        self.library_fetched[section] = Some(Instant::now());
+        if self.library_section.min(4) == section {
+            self.loading_library = false;
+        }
+        if self.library_section_visible(section) {
+            let len = self.library_len(section);
+            self.list_state.selected = self.list_state.selected.min(len.saturating_sub(1));
+            self.list_state.offset = self.list_state.offset.min(self.list_state.selected);
+        }
+    }
+
+    /// Marks a section out of date after an edit, re-syncing it now if it is on screen.
+    fn invalidate_library(&mut self, section: usize, cmds: &mut Vec<Command>) {
+        self.library_fetched[section] = None;
+        if self.library_section_visible(section) {
+            self.load_library_section(cmds);
         }
     }
 
@@ -1770,7 +1808,7 @@ impl App {
                 self.signed_in = true;
                 self.account_name = session.account_name.clone();
                 self.overlay = Overlay::None;
-                self.library_fetched = [false; 5];
+                self.library_fetched = [None; 5];
                 self.push_toast(Toast::success(format!(
                     "Signed in as {}",
                     session.account_name.as_deref().unwrap_or("user")
@@ -1796,7 +1834,7 @@ impl App {
             AppEvent::AuthState(AuthStateEvent::LoggedOut) => {
                 self.signed_in = false;
                 self.account_name = None;
-                self.library_fetched = [false; 5];
+                self.library_fetched = [None; 5];
                 self.liked_songs.clear();
                 self.library_playlists.clear();
                 self.library_albums.clear();
@@ -1807,7 +1845,7 @@ impl App {
             AppEvent::AuthState(AuthStateEvent::SessionExpired(msg)) => {
                 self.signed_in = false;
                 self.loading_library = false;
-                self.library_fetched = [false; 5];
+                self.library_fetched = [None; 5];
                 self.liked_songs.clear();
                 self.library_playlists.clear();
                 self.library_albums.clear();
@@ -1895,30 +1933,25 @@ impl App {
                 self.fetch_detail_cover(&mut cmds);
             }
             AppEvent::LibraryPlaylists(p) => {
-                self.loading_library = false;
-                self.library_fetched[1] = true;
                 self.library_playlists = p;
+                self.library_loaded(1);
                 self.ensure_playlist_covers(&mut cmds);
             }
             AppEvent::LikedSongs(t) => {
-                self.loading_library = false;
-                self.library_fetched[0] = true;
                 self.liked_songs = t;
+                self.library_loaded(0);
             }
             AppEvent::LibraryAlbums(a) => {
-                self.loading_library = false;
-                self.library_fetched[2] = true;
                 self.library_albums = a;
+                self.library_loaded(2);
             }
             AppEvent::LibraryArtists(a) => {
-                self.loading_library = false;
-                self.library_fetched[3] = true;
                 self.library_artists = a;
+                self.library_loaded(3);
             }
             AppEvent::History(t) => {
-                self.loading_library = false;
-                self.library_fetched[4] = true;
                 self.history = t;
+                self.library_loaded(4);
             }
             AppEvent::RadioTracks { tracks, .. } => {
                 let _ = self
@@ -1956,9 +1989,16 @@ impl App {
                 } else {
                     "Removed like"
                 }));
+                self.invalidate_library(0, &mut cmds);
             }
-            AppEvent::PlaylistCreated(_) => self.push_toast(Toast::success("Playlist created")),
-            AppEvent::AddedToPlaylist => self.push_toast(Toast::success("Added to playlist")),
+            AppEvent::PlaylistCreated(_) => {
+                self.push_toast(Toast::success("Playlist created"));
+                self.invalidate_library(1, &mut cmds);
+            }
+            AppEvent::AddedToPlaylist => {
+                self.push_toast(Toast::success("Added to playlist"));
+                self.invalidate_library(1, &mut cmds);
+            }
             AppEvent::Error(e) => {
                 self.loading_library = false;
                 self.loading_home = false;
