@@ -80,14 +80,9 @@ const LAST_RESORT_ITAG: i64 = 139;
 /// Progressive muxed mp4 (H.264 + AAC) — works without PO on some clients.
 const PROGRESSIVE_ITAG: i64 = 18;
 
-/// Refusals a signed-in WEB_REMIX request may get past.
-fn session_may_help(err: &str) -> bool {
-    ["Music Premium", "confirm your age", "LOGIN_REQUIRED"]
-        .iter()
-        .any(|n| err.contains(n))
-}
-
 /// `STATUS: reason` from a player response, as opposed to network/solver trouble.
+/// A signed-in WEB_REMIX request may get past any of these: besides Premium and
+/// age gates, some Music-only releases are refused as "not available" elsewhere.
 fn is_playability_error(err: &str) -> bool {
     ["UNPLAYABLE:", "LOGIN_REQUIRED:", "ERROR:", "AGE_", "CONTENT_CHECK_REQUIRED:"]
         .iter()
@@ -347,7 +342,7 @@ impl Resolver {
             .is_some();
         if signed_in
             && !skipped.iter().any(|c| c == WEB_REMIX_NAME)
-            && errors.iter().any(|e| session_may_help(e))
+            && errors.iter().any(|e| is_playability_error(e))
         {
             match self.resolve_web_remix(video_id).await {
                 Ok(stream) => return Ok(stream),
@@ -997,8 +992,9 @@ mod tests {
     }
 
     /// Network + a real session: `YT_TUI_AUTH_JSON=<auth.json> cargo test live_ -- --ignored`.
-    /// Premium-only (QpXD1Hfvy28) and age-gated (4avspFPZOWs) tracks must resolve via
-    /// WEB_REMIX and download; a normal track (3QY9AzTHoio) stays on the plain path.
+    /// Premium-only (QpXD1Hfvy28), age-gated (4avspFPZOWs) and Music-only (CT_J9G6LHfQ)
+    /// tracks must resolve via WEB_REMIX and download; a normal track (3QY9AzTHoio)
+    /// stays on the plain path.
     #[tokio::test]
     #[ignore]
     async fn live_signed_in_restricted_tracks() {
@@ -1020,6 +1016,7 @@ mod tests {
         for (vid, client) in [
             ("QpXD1Hfvy28", WEB_REMIX_NAME),
             ("4avspFPZOWs", WEB_REMIX_NAME),
+            ("CT_J9G6LHfQ", WEB_REMIX_NAME),
             ("3QY9AzTHoio", "VISIONOS"),
         ] {
             let stream = resolver.resolve(vid).await.unwrap();
