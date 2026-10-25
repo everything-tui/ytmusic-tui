@@ -110,6 +110,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
                     .then_some(app.library_section),
                 account: app.account_name.as_deref(),
                 signed_in: app.signed_in,
+                premium: app.premium.known(),
                 mcp_enabled: app.control.is_some(),
                 track: app.current_track(),
                 cover: current_cover,
@@ -143,6 +144,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             state: app.playback_state,
             position: app.position,
             duration: app.duration,
+            stream: app.current_stream_info(),
             volume: app.volume,
             muted: app.muted,
             shuffle: app.shuffle,
@@ -478,6 +480,7 @@ fn draw_account_menu(area: Rect, buf: &mut Buffer, theme: &Theme, app: &App) {
     let inner = modal(buf, area, 46, 10, "Account", "esc", theme);
     let bg = Style::default().bg(theme.bg_modal);
     let mut opts: Vec<(&str, &str)> = Vec::new();
+    let mut opts_y = inner.y + 2;
     if app.signed_in {
         let name = app.account_name.as_deref().unwrap_or("user");
         buf.set_line(
@@ -491,6 +494,13 @@ fn draw_account_menu(area: Rect, buf: &mut Buffer, theme: &Theme, app: &App) {
             .patch_style(bg),
             inner.width,
         );
+        let (status, style) = match app.premium.known() {
+            Some(true) => ("Music Premium · 256 kbps audio", theme.accent()),
+            Some(false) => ("Free account · up to 128 kbps audio", theme.dim()),
+            None => ("Music Premium: checking…", theme.muted()),
+        };
+        buf.set_string(inner.x + 2, inner.y + 1, status, style.patch(bg));
+        opts_y += 1;
         opts.push(("L", "Log out"));
     } else {
         buf.set_string(inner.x, inner.y, "○ Not signed in", theme.dim().patch(bg));
@@ -498,7 +508,7 @@ fn draw_account_menu(area: Rect, buf: &mut Buffer, theme: &Theme, app: &App) {
         opts.push(("P", "Paste cookie"));
     }
     for (i, (key, label)) in opts.iter().enumerate() {
-        let y = inner.y + 2 + i as u16 * 2;
+        let y = opts_y + i as u16 * 2;
         if y >= inner.y + inner.height {
             break;
         }
@@ -586,6 +596,28 @@ mod tests {
     }
 
     use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn shows_premium_status() {
+        use crate::player::resolver::Premium;
+        let mut app = test_app();
+        // Unknown yet: no tier claimed in the sidebar.
+        let out = render(&app, 120, 36);
+        assert!(out.contains("Tester") && !out.contains("Premium") && !out.contains("Free"), "{out}");
+
+        for (premium, sidebar, menu) in [
+            (Premium::Yes, "Premium", "Music Premium · 256 kbps audio"),
+            (Premium::No, "Free", "Free account · up to 128 kbps audio"),
+        ] {
+            app.premium = premium;
+            app.overlay = Overlay::None;
+            let out = render(&app, 120, 36);
+            assert!(out.contains(sidebar), "{out}");
+            app.overlay = Overlay::AccountMenu;
+            let out = render(&app, 120, 36);
+            assert!(out.contains(menu), "{out}");
+        }
+    }
 
     #[test]
     fn frame_layouts_are_borderless_and_responsive() {

@@ -23,6 +23,8 @@ use tokio::sync::mpsc;
 
 /// Window in which a second Ctrl+C confirms quit.
 const CTRL_C_QUIT_WINDOW: Duration = Duration::from_secs(2);
+/// How long the highlight must rest on a track before it is prewarmed.
+const PREWARM_DWELL: Duration = Duration::from_millis(400);
 /// How long a library section is reused before it is re-synced with YouTube.
 const LIBRARY_TTL: Duration = Duration::from_secs(60);
 
@@ -101,6 +103,14 @@ pub struct App {
     pub playback_state: PlaybackState,
     pub position: Duration,
     pub duration: Option<Duration>,
+    /// Codec/size of the opened stream, keyed by video id.
+    pub stream_info: Option<(String, crate::player::source::StreamInfo)>,
+    /// Music Premium status of the signed-in account, as the resolver learned it.
+    pub premium: crate::player::resolver::Premium,
+    /// Highlighted track and since when, for prewarming after a short dwell.
+    prewarm_dwell: Option<(String, Instant)>,
+    /// Last track sent for prewarming, so a dwell triggers it once.
+    prewarm_sent: Option<String>,
     pub volume: f32,
     pub muted: bool,
     pub shuffle: bool,
@@ -218,6 +228,8 @@ pub enum PlayerCommand {
     SetEq(crate::player::EqParams),
     /// Sync Music session cookies into the stream resolver (yt-dlp auth path).
     SetCookies(Option<String>),
+    /// Get a highlighted track ready to start instantly.
+    Prewarm(Track),
 }
 
 impl App {
@@ -270,6 +282,10 @@ impl App {
             playback_state: PlaybackState::Stopped,
             position: Duration::ZERO,
             duration: None,
+            stream_info: None,
+            premium: crate::player::resolver::Premium::UNKNOWN,
+            prewarm_dwell: None,
+            prewarm_sent: None,
             muted: false,
             shuffle: false,
             repeat: RepeatMode::Off,
@@ -320,6 +336,12 @@ impl App {
 
     pub fn current_track(&self) -> Option<&Track> {
         self.current.as_ref()
+    }
+
+    /// Stream info for the current track, if its audio has been opened.
+    pub fn current_stream_info(&self) -> Option<&crate::player::source::StreamInfo> {
+        let (id, info) = self.stream_info.as_ref()?;
+        (self.current.as_ref()?.video_id == *id).then_some(info)
     }
 
     pub fn current_cover(&self) -> Option<&crate::art::Cover> {
@@ -528,6 +550,7 @@ impl App {
                     self.title_marquee.set_text(t.title.clone());
                 }
                 self.title_marquee.tick();
+                self.prewarm_highlighted();
                 if let Some(at) = self.ctrl_c_armed_at {
                     if at.elapsed() > CTRL_C_QUIT_WINDOW {
                         self.ctrl_c_armed_at = None;
@@ -1662,6 +1685,29 @@ impl App {
         }
     }
 
+    /// After the highlight rests on a track for a moment, have the player get it
+    /// ready; scrolling past tracks quickly fetches nothing.
+    fn prewarm_highlighted(&mut self) {
+        if !self.config.playback.prewarm || !matches!(self.overlay, Overlay::None) {
+            return;
+        }
+        let Some(track) = self.selected_track() else {
+            self.prewarm_dwell = None;
+            return;
+        };
+        match &self.prewarm_dwell {
+            Some((id, since)) if *id == track.video_id => {
+                if since.elapsed() >= PREWARM_DWELL
+                    && self.prewarm_sent.as_deref() != Some(id.as_str())
+                {
+                    self.prewarm_sent = Some(id.clone());
+                    let _ = self.player_cmd_tx.send(PlayerCommand::Prewarm(track));
+                }
+            }
+            _ => self.prewarm_dwell = Some((track.video_id, Instant::now())),
+        }
+    }
+
     /// Mark the UI as loading immediately so Enter feels instant while resolve/download run.
     fn begin_play_track(&mut self, track: Track) -> Vec<Command> {
         self.playback_state = PlaybackState::Loading;
@@ -2139,6 +2185,11 @@ impl App {
                 let _ = self.player_cmd_tx.send(PlayerCommand::Next);
             }
             PlayerEvent::DownloadProgress { .. } => {}
+            PlayerEvent::Stream { video_id, info } => {
+                self.visualizer.set_sample_rate(info.sample_rate);
+                self.stream_info = Some((video_id, info));
+            }
+            PlayerEvent::Premium(p) => self.premium = p,
         }
         cmds
     }
@@ -2569,5 +2620,79 @@ mod paste_tests {
         assert_eq!(single_line("a\u{1b}[31mb", 200), "a [31mb");
         assert_eq!(single_line("Träumerei über alles", 8), "Träumere");
         assert_eq!(single_line(" \n\t ", 200), "");
+    }
+}
+
+#[cfg(test)]
+mod prewarm_tests {
+    use super::*;
+    use crate::api::model::{ArtistRef, Shelf, ShelfItem};
+
+    fn app(prewarm: bool) -> (App, mpsc::UnboundedReceiver<PlayerCommand>) {
+        let root = std::env::temp_dir().join(format!("yt-tui-prewarm-test-{}", std::process::id()));
+        let paths = Arc::new(Paths {
+            config_dir: root.join("config"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+        });
+        let mut config = Config::default();
+        config.playback.prewarm = prewarm;
+        let (cmd_tx, _) = mpsc::unbounded_channel();
+        let (player_tx, player_rx) = mpsc::unbounded_channel();
+        let mut app = App::new(paths, config, cmd_tx, player_tx, true, None);
+        app.overlay = Overlay::None;
+        app.tab = Tab::Home;
+        app.home_shelves = vec![Shelf {
+            title: "Quick picks".into(),
+            items: (0..3)
+                .map(|i| {
+                    ShelfItem::Track(Track {
+                        video_id: format!("v{i}"),
+                        title: format!("Song {i}"),
+                        artists: vec![ArtistRef { id: None, name: "A".into() }],
+                        album: None,
+                        duration: None,
+                        thumbnails: vec![],
+                        explicit: false,
+                        liked: None,
+                        from_radio: false,
+                    })
+                })
+                .collect(),
+        }];
+        (app, player_rx)
+    }
+
+    fn prewarmed(rx: &mut mpsc::UnboundedReceiver<PlayerCommand>) -> Vec<String> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|c| match c {
+                PlayerCommand::Prewarm(t) => Some(t.video_id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn prewarms_highlight_after_dwell_once() {
+        let (mut app, mut rx) = app(true);
+        app.update(Action::Tick);
+        assert!(prewarmed(&mut rx).is_empty(), "not before the dwell");
+        // Scrolling on resets the dwell.
+        app.home_item_idx = 1;
+        app.prewarm_dwell = Some(("v1".into(), Instant::now() - PREWARM_DWELL));
+        app.update(Action::Tick);
+        app.update(Action::Tick);
+        assert_eq!(prewarmed(&mut rx), ["v1"]);
+        app.home_item_idx = 2;
+        app.update(Action::Tick);
+        assert!(prewarmed(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn prewarm_can_be_turned_off() {
+        let (mut app, mut rx) = app(false);
+        app.prewarm_dwell = Some(("v0".into(), Instant::now() - PREWARM_DWELL));
+        app.update(Action::Tick);
+        assert!(prewarmed(&mut rx).is_empty());
     }
 }

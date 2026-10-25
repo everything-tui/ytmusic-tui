@@ -42,6 +42,8 @@ pub struct Sidebar<'a> {
     pub library_section: Option<usize>,
     pub account: Option<&'a str>,
     pub signed_in: bool,
+    /// Music Premium, once known.
+    pub premium: Option<bool>,
     pub mcp_enabled: bool,
     pub track: Option<&'a Track>,
     pub cover: CoverCtx<'a>,
@@ -222,13 +224,23 @@ impl<'a> Sidebar<'a> {
                 ),
             };
             buf.set_string(x - 1, account_y, format!(" {initial} "), chip);
+            let room = w.saturating_sub(3) as usize;
             buf.set_stringn(
                 x + 3,
                 account_y,
-                truncate(&name, w.saturating_sub(3) as usize),
-                w.saturating_sub(3) as usize,
+                truncate(&name, room),
+                room,
                 name_style.patch(bg),
             );
+            // Tier as a subtitle under the name, in the spacer row above the MCP status.
+            let tier = match self.premium.filter(|_| self.signed_in) {
+                Some(true) => Some(("Premium", theme.accent())),
+                Some(false) => Some(("Free", theme.faint())),
+                None => None,
+            };
+            if let Some((tier, style)) = tier {
+                buf.set_stringn(x + 3, account_y + 1, tier, room, style.patch(bg));
+            }
             hit.buttons.push((Rect::new(area.x, account_y, area.width, 1), Action::AccountMenu));
         }
         let status_y = bottom.saturating_sub(2);

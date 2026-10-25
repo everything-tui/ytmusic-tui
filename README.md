@@ -103,6 +103,7 @@ autoplay = true
 volume = 0.8
 cache_size_mb = 1024
 prefetch = true
+prewarm = true             # fetch the start of highlighted/upcoming tracks so they play instantly
 eq_enabled = true
 eq_gains = [0.0, 0.0, 0.0, 0.0, 0.0]  # Bass … Treble, ±12 dB
 ```

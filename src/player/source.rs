@@ -486,6 +486,89 @@ impl StreamControl {
     }
 }
 
+/// What is actually being decoded, for the quality badge.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamInfo {
+    pub codec: &'static str,
+    pub sample_rate: u32,
+    /// Full file size, once known — with the duration it gives the average bitrate.
+    pub bytes: Option<u64>,
+}
+
+/// Bitrates YouTube serves AAC at (itags 139/140/141). Opus is VBR, so its
+/// average is shown as measured.
+const NOMINAL_KBPS: [u32; 3] = [48, 128, 256];
+
+/// Lowest average Opus bitrate counted as the Premium tier (itag 774 averages
+/// ~230–280 kbps; the free itag 251 stays under ~170).
+const PREMIUM_OPUS_KBPS: u32 = 200;
+
+/// Bitrate in AAC terms, for comparing renditions across codecs: Opus matches
+/// AAC's quality at roughly 70% of the bitrate.
+pub fn perceived_kbps(codec: &str, kbps: u32) -> u32 {
+    if codec == "Opus" {
+        kbps * 10 / 7
+    } else {
+        kbps
+    }
+}
+
+impl StreamInfo {
+    /// Average kbps over `duration`; for AAC snapped to a nominal rate when it's
+    /// close (container overhead adds a few percent).
+    pub fn kbps(&self, duration: Duration) -> Option<u32> {
+        let secs = duration.as_secs_f64();
+        if secs < 1.0 {
+            return None;
+        }
+        let kbps = self.bytes? as f64 * 8.0 / secs / 1000.0;
+        // Larger means a muxed video file (itag 18); the figure would be meaningless.
+        if !(8.0..=400.0).contains(&kbps) {
+            return None;
+        }
+        let nominal = (self.codec == "AAC")
+            .then(|| NOMINAL_KBPS.into_iter().find(|&n| (kbps / n as f64 - 1.0).abs() <= 0.1))
+            .flatten();
+        Some(nominal.unwrap_or(kbps.round() as u32))
+    }
+
+    /// `AAC 256 kbps · 44.1 kHz`, dropping parts that are unknown or don't fit
+    /// (down to just `256 kbps`).
+    pub fn label(&self, duration: Option<Duration>, max_width: usize) -> String {
+        let rate = self.kbps(duration.unwrap_or_default());
+        let base = match rate {
+            Some(k) => format!("{} {k} kbps", self.codec),
+            None => self.codec.to_string(),
+        };
+        let khz = self.sample_rate as f64 / 1000.0;
+        let full = format!("{base} · {} kHz", (khz * 10.0).round() / 10.0);
+        let short = rate.map(|k| format!("{k} kbps")).unwrap_or_default();
+        [full, base, short]
+            .into_iter()
+            .find(|l| l.chars().count() <= max_width)
+            .unwrap_or_default()
+    }
+
+    /// The Premium tier: AAC 256 kbps or Opus at a comparable rate.
+    pub fn is_high(&self, duration: Option<Duration>) -> bool {
+        let min = if self.codec == "Opus" { PREMIUM_OPUS_KBPS } else { 256 };
+        self.kbps(duration.unwrap_or_default()).is_some_and(|k| k >= min)
+    }
+}
+
+fn codec_name(codec: symphonia::core::codecs::CodecType) -> &'static str {
+    use symphonia::core::codecs::*;
+    match codec {
+        CODEC_TYPE_AAC => "AAC",
+        CODEC_TYPE_OPUS => "Opus",
+        CODEC_TYPE_VORBIS => "Vorbis",
+        CODEC_TYPE_MP3 => "MP3",
+        CODEC_TYPE_FLAC => "FLAC",
+        CODEC_TYPE_ALAC => "ALAC",
+        _ => "Audio",
+    }
+}
+
 /// Symphonia-backed audio source. Avoids `rodio::Decoder`, which wraps readers in a
 /// MediaSource that is always seekable but never reports `byte_len` — that combination
 /// panics inside rodio on YouTube's DASH/fMP4 streams.
@@ -507,6 +590,7 @@ pub struct SymphoniaSource {
     pending_seek: Option<Duration>,
     /// Samples left before the pending seek is checked again.
     recheck_in: u32,
+    codec: &'static str,
 }
 
 impl SymphoniaSource {
@@ -549,7 +633,7 @@ impl SymphoniaSource {
             .cloned()
             .context("no supported audio track")?;
         let track_id = track.id;
-        let decoder = symphonia::default::get_codecs()
+        let decoder = crate::player::opus::codecs()
             .make(&track.codec_params, &DecoderOptions::default())
             .context("creating audio decoder")?;
         let total_duration = track
@@ -588,6 +672,7 @@ impl SymphoniaSource {
             duration_hint: total_duration,
             pending_seek: None,
             recheck_in: 0,
+            codec: codec_name(track.codec_params.codec),
         };
         // Prime the first buffer so channels()/sample_rate() are accurate for rodio.
         if source.fill_buf().is_err() {
@@ -640,6 +725,14 @@ impl SymphoniaSource {
 }
 
 impl SymphoniaSource {
+    pub fn stream_info(&self) -> StreamInfo {
+        StreamInfo {
+            codec: self.codec,
+            sample_rate: self.spec.rate,
+            bytes: self.file.0.lock().expected.filter(|&n| n > 0),
+        }
+    }
+
     pub fn control(&self) -> StreamControl {
         self.ctl.clone()
     }
@@ -777,11 +870,12 @@ pub const START_BUFFER_BYTES: u64 = 96 * 1024;
 
 pub fn open_decoder(gf: Arc<GrowingFile>, cancel: &CancelToken) -> Result<SymphoniaSource> {
     gf.wait_bytes_cancellable(START_BUFFER_BYTES, cancel)?;
-    // Prefer m4a (itag 140); fall back to mp4 for progressive itag 18 muxed streams.
+    // Symphonia detects the container (MP4 or WebM) from the bytes; the hint is
+    // unused, and the second attempt is a plain retry with fresh state.
     match SymphoniaSource::open(gf.reader(cancel.clone()), "m4a") {
         Ok(src) => Ok(src),
         Err(e) => SymphoniaSource::open(gf.reader(cancel.clone()), "mp4")
-            .with_context(|| format!("opening audio stream (m4a failed: {e})")),
+            .with_context(|| format!("opening audio stream (first attempt: {e})")),
     }
 }
 
@@ -808,6 +902,34 @@ pub fn open_decoder_resilient(gf: Arc<GrowingFile>, cancel: &CancelToken) -> Res
 mod decode_tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn stream_info_label() {
+        let info = |bytes| StreamInfo { codec: "AAC", sample_rate: 44100, bytes };
+        let d = Some(Duration::from_secs(211));
+        // CT_J9G6LHfQ: itag 141 at 6,761,864 bytes over 3:31.
+        let premium = info(Some(6_761_864));
+        assert_eq!(premium.label(d, 40), "AAC 256 kbps · 44.1 kHz");
+        assert_eq!(premium.label(d, 14), "AAC 256 kbps");
+        assert_eq!(premium.label(d, 10), "256 kbps");
+        assert!(premium.is_high(d));
+        // itag 140 with a little container overhead.
+        let standard = info(Some(211 * 131 * 1000 / 8));
+        assert_eq!(standard.label(d, 40), "AAC 128 kbps · 44.1 kHz");
+        assert!(!standard.is_high(d));
+        // Off-tier rates show as measured; unknown size or duration drops the rate.
+        assert_eq!(info(Some(211 * 96 * 1000 / 8)).label(d, 12), "AAC 96 kbps");
+        assert_eq!(info(None).label(d, 40), "AAC · 44.1 kHz");
+        assert_eq!(premium.label(None, 40), "AAC · 44.1 kHz");
+
+        // Opus is VBR: shown as measured, never snapped; Premium from ~200 kbps.
+        let opus = |kbps: u64| StreamInfo { codec: "Opus", sample_rate: 48000, bytes: Some(211 * kbps * 1000 / 8) };
+        assert_eq!(opus(137).label(d, 40), "Opus 137 kbps · 48 kHz");
+        assert!(!opus(150).is_high(d));
+        assert!(opus(245).is_high(d));
+        assert!(perceived_kbps("Opus", 150) > perceived_kbps("AAC", 128));
+        assert!(perceived_kbps("Opus", 245) > perceived_kbps("AAC", 256));
+    }
 
     fn sample_path() -> PathBuf {
         // Prefer a larger DASH m4a so progressive demux exercises the sidx path.

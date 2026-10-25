@@ -262,4 +262,8 @@ pub enum PlayerEvent {
     Ended,
     Error(String),
     DownloadProgress { video_id: String, pct: f32 },
+    /// Codec/size of the stream just opened for `video_id`.
+    Stream { video_id: String, info: crate::player::source::StreamInfo },
+    /// What the resolver learned about the account's Music Premium status.
+    Premium(crate::player::resolver::Premium),
 }

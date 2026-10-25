@@ -157,6 +157,7 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
     let volume = config.playback.volume;
     let autoplay = config.playback.autoplay;
     let cache_mb = config.playback.cache_size_mb;
+    let prewarm = config.playback.prewarm;
     let eq_params = player::EqParams {
         enabled: config.playback.eq_enabled,
         gains_db: config.playback.eq_gains,
@@ -175,6 +176,7 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
             volume,
             autoplay,
             cache_mb,
+            prewarm,
             eq_params,
             event_tx_p.clone(),
             viz_samples_player,
@@ -263,6 +265,7 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
                 }
                 PlayerCommand::SetEq(params) => player.set_eq(params),
                 PlayerCommand::SetCookies(c) => player.set_cookies(c).await,
+                PlayerCommand::Prewarm(t) => player.prewarm_track(&t),
             }
             // Sync queue in *play* order so UI cursor / JumpTo match what plays
             // (storage order + play-order cursor desynced under shuffle/radio).

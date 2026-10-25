@@ -28,7 +28,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 rodio = { version = "0.20", default-features = false, features = ["symphonia-aac", "symphonia-isomp4"] }
-symphonia = { version = "0.5", features = ["aac", "isomp4", "mp3"] }
+symphonia = { version = "0.5", features = ["aac", "isomp4", "mkv", "mp3"] }
+# Pure-Rust Opus, bit-exact with libopus: YouTube's WebM audio, no C toolchain needed.
+rusty-opus = "1"
 ringbuf = "0.4"
 rustfft = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
@@ -92,6 +94,12 @@ debug = false
 opt-level = 3
 debug = false
 [profile.dev.package.symphonia-format-isomp4]
+opt-level = 3
+debug = false
+[profile.dev.package.symphonia-format-mkv]
+opt-level = 3
+debug = false
+[profile.dev.package.rusty-opus]
 opt-level = 3
 debug = false
 [profile.dev.package.rquickjs-sys]

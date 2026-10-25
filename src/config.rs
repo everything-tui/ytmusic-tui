@@ -81,6 +81,10 @@ pub struct PlaybackConfig {
     pub seek_step_secs: u64,
     pub cache_size_mb: u64,
     pub prefetch: bool,
+    /// Fetch the start of tracks you're likely to play next — the highlighted one
+    /// in a list and the upcoming queue — so they start instantly. Costs some
+    /// extra requests and ~256 KB per track.
+    pub prewarm: bool,
     /// When false, EQ is bypassed.
     pub eq_enabled: bool,
     /// Per-band gains in dB (10-band graphic EQ), clamped to ±12.
@@ -133,6 +137,7 @@ impl Default for PlaybackConfig {
             seek_step_secs: 5,
             cache_size_mb: 1024,
             prefetch: true,
+            prewarm: true,
             eq_enabled: true,
             eq_gains: default_eq_gains(),
             eq_adaptive: default_eq_adaptive(),

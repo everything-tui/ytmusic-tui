@@ -46,6 +46,13 @@ impl Visualizer {
         }
     }
 
+    /// Rate of the samples fed in (Opus decodes at 48 kHz, YouTube AAC at 44.1).
+    pub fn set_sample_rate(&mut self, rate: u32) {
+        if rate > 0 {
+            self.sample_rate = rate;
+        }
+    }
+
     pub fn set_band_count(&mut self, n: usize) {
         let n = n.clamp(8, 128);
         if self.bands.len() != n {

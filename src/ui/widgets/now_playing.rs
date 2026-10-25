@@ -1,5 +1,6 @@
 use crate::api::model::Track;
 use crate::player::queue::RepeatMode;
+use crate::player::source::StreamInfo;
 use crate::player::PlaybackState;
 use crate::ui::components::{fill, truncate};
 use crate::ui::cover::{CoverCtx, CoverSlot};
@@ -29,6 +30,7 @@ pub struct NowPlayingBar<'a> {
     pub state: PlaybackState,
     pub position: Duration,
     pub duration: Option<Duration>,
+    pub stream: Option<&'a StreamInfo>,
     pub volume: f32,
     pub muted: bool,
     pub shuffle: bool,
@@ -110,6 +112,26 @@ impl<'a> NowPlayingBar<'a> {
                 ..right
             };
             hit.volume = Some(render_volume(buf, vol_row, self.volume, self.muted, theme));
+
+            // Quality badge right-aligned just above the volume bar; Premium-tier
+            // audio gets a tag so it's obvious when the subscription pays off.
+            if let (Some(info), true) = (self.stream, right.height >= 2) {
+                let dur = Some(dur).filter(|d| !d.is_zero());
+                let high = info.is_high(dur);
+                let tag = if high { " PREMIUM " } else { "" };
+                let tag_w = tag.width() as u16;
+                let room = right.width.saturating_sub(tag_w + 1) as usize;
+                let label = info.label(dur, room);
+                let w = label.width() as u16;
+                let y = vol_row.y - 1;
+                let label_x = right.x + right.width - w;
+                let style = if high { theme.accent() } else { theme.muted() };
+                buf.set_stringn(label_x, y, &label, w as usize, style);
+                if high {
+                    let gap = u16::from(w > 0);
+                    buf.set_string(label_x - gap - tag_w, y, tag, theme.on_accent());
+                }
+            }
         }
     }
 
@@ -282,6 +304,7 @@ mod tests {
                 state: PlaybackState::Playing,
                 position: Duration::from_secs(73),
                 duration: None,
+                stream: Some(&StreamInfo { codec: "AAC", sample_rate: 44100, bytes: Some(6_400_000) }),
                 volume: 0.6,
                 muted: false,
                 shuffle: true,
@@ -297,6 +320,9 @@ mod tests {
             assert!(hit.progress.is_some(), "progress missing at {w}x{h}");
             assert_eq!(hit.buttons.len(), 6, "controls missing at {w}x{h}");
             assert!(out.contains("Blinding"), "title missing at {w}x{h}");
+            // The right column (and with it the badge) only exists from 70 columns.
+            assert_eq!(out.contains("256 kbps"), w >= 80, "quality badge at {w}x{h}");
+            assert_eq!(out.contains("PREMIUM"), w >= 80, "premium tag at {w}x{h}");
             for g in ['│', '╭', '╮', '╰', '╯'] {
                 assert!(!out.contains(g), "border glyph {g} at {w}x{h}");
             }
