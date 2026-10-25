@@ -64,6 +64,11 @@ impl Paths {
         self.cache_dir.join("art")
     }
 
+    /// YouTube player scripts (and their preprocessed solver form) by version.
+    pub fn player_js_cache_dir(&self) -> PathBuf {
+        self.cache_dir.join("player-js")
+    }
+
     pub fn lyrics_cache_dir(&self) -> PathBuf {
         self.cache_dir.join("lyrics")
     }

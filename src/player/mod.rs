@@ -2,6 +2,7 @@ pub mod download;
 pub mod engine;
 pub mod eq;
 pub mod eq_adaptive;
+pub mod jsc;
 pub mod queue;
 pub mod resolver;
 pub mod source;
@@ -79,7 +80,7 @@ impl PlayerService {
             }
         });
 
-        let resolver = Resolver::new();
+        let resolver = Resolver::new(paths.player_js_cache_dir());
         let downloader = Downloader::new(paths.audio_cache_dir(), cache_mb);
 
         Self {

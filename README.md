@@ -16,11 +16,11 @@ Requires a recent Rust toolchain (`rustup`).
 
 ### Dependencies
 
-No external programs are required for playback — stream URLs are resolved natively via YouTube’s Innertube API (no `yt-dlp`, Node, Deno, or Bun).
+No external programs are required for playback — stream URLs are resolved natively via YouTube’s Innertube API (no `yt-dlp`, Node, Deno, or Bun). When signed in, tracks the default clients refuse (Music Premium–only, age-restricted) fall back to the YouTube Music web client; its ciphered URLs are solved with [yt-dlp’s EJS solver](https://github.com/yt-dlp/ejs) running on an embedded QuickJS.
 
 No YouTube API key. No manual cookie copying in the happy path.
 
-**Known limitations:** age-restricted and some region-locked tracks may not play (the stream client is unauthenticated). If YouTube changes mobile player clients, playback may need updated client constants in the resolver.
+**Known limitations:** Premium-only tracks need a signed-in Music Premium account; age-restricted tracks need a signed-in, age-verified account (without Premium, YouTube may additionally demand a PO token, which isn’t supported). Region-locked tracks may not play. If YouTube changes player clients, playback may need updated client constants in the resolver.
 
 ## Quick start
 

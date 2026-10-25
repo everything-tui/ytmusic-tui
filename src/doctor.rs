@@ -9,6 +9,10 @@ pub fn doctor_report(paths: &Paths) -> String {
     lines.push(format!("data:   {}", paths.data_dir.display()));
     lines.push(format!("cache:  {}", paths.cache_dir.display()));
     lines.push("stream resolver: native Innertube (no yt-dlp / node / deno)".into());
+    lines.push(format!(
+        "signed-in fallback: WEB_REMIX via embedded QuickJS (player cache: {})",
+        paths.player_js_cache_dir().display()
+    ));
 
     let truecolor = std::env::var("COLORTERM")
         .map(|v| v == "truecolor" || v == "24bit")

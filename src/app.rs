@@ -663,6 +663,10 @@ impl App {
                         query.push(c);
                         selected = 0;
                     }
+                    Action::PasteText(text) => {
+                        query.push_str(&single_line(&text, MAX_QUERY_CHARS));
+                        selected = 0;
+                    }
                     Action::PaletteBackspace => {
                         query.pop();
                         selected = 0;
@@ -938,6 +942,17 @@ impl App {
                 // Drop stale results so the next Enter runs a new search, not play.
                 self.clear_search_results();
                 self.debounce_search(&mut cmds);
+            }
+            // Bracketed paste (Cmd+V etc.) arrives as one event, not keystrokes.
+            Action::PasteText(text) if self.tab == Tab::Search && self.detail.is_none() => {
+                let room = MAX_QUERY_CHARS.saturating_sub(self.search_query.chars().count());
+                let pasted = single_line(&text, room);
+                if !pasted.is_empty() {
+                    self.search_editing = true;
+                    self.search_query.push_str(&pasted);
+                    self.clear_search_results();
+                    self.debounce_search(&mut cmds);
+                }
             }
             Action::SearchBackspace => {
                 self.search_query.pop();
@@ -2185,6 +2200,26 @@ fn apply_cmds(app: &mut App, cmd_tx: &mpsc::UnboundedSender<Command>, action: Ac
     }
 }
 
+/// Longest search / palette query a paste can produce.
+const MAX_QUERY_CHARS: usize = 200;
+
+/// Flatten pasted text for a one-line field: line breaks, tabs and other
+/// control characters become spaces, runs of whitespace collapse, and the
+/// result is trimmed and capped at `max` characters.
+fn single_line(text: &str, max: usize) -> String {
+    let cleaned: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    cleaned
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max)
+        .collect()
+}
+
 fn handle_terminal_event(
     app: &mut App,
     cmd_tx: &mpsc::UnboundedSender<Command>,
@@ -2521,4 +2556,18 @@ pub async fn run_ui(
     );
     ratatui::restore();
     result
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::single_line;
+
+    #[test]
+    fn paste_flattens_to_one_line() {
+        assert_eq!(single_line("  Bausa – Was du Liebe nennst\n", 200), "Bausa – Was du Liebe nennst");
+        assert_eq!(single_line("Post Malone\r\n\tFuck", 200), "Post Malone Fuck");
+        assert_eq!(single_line("a\u{1b}[31mb", 200), "a [31mb");
+        assert_eq!(single_line("Träumerei über alles", 8), "Träumere");
+        assert_eq!(single_line(" \n\t ", 200), "");
+    }
 }
