@@ -1,0 +1,9 @@
+{
+  "playabilityStatus": {
+    "status": "LOGIN_REQUIRED",
+    "reason": "Sign in to confirm your age"
+  },
+  "responseContext": {
+    "visitorData": "CgtStaleVisitor%3D%3D"
+  }
+}

@@ -1,0 +1,57 @@
+# Horizon-style release trigger: pushing to `publish` releases the version in
+# CHANGELOG.md / Cargo.toml. It validates the version, then dispatches the dist
+# release workflow (release.yml) with tag vX.Y.Z. dist builds all targets,
+# creates the tag + GitHub Release, publishes the Homebrew formula, and
+# release-notes.yml writes the release page from CHANGELOG.md.
+name: Create Release
+
+on:
+  push:
+    branches: [publish]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: create-release
+  cancel-in-progress: false
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Versions match (CHANGELOG.md, Cargo.toml, Cargo.lock)
+        run: scripts/version.sh check
+
+      - name: Check if already released
+        id: state
+        run: |
+          VERSION="$(scripts/version.sh version)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if scripts/version.sh released "$VERSION"; then
+            echo "⚠️  v$VERSION is already released; nothing to do"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Version is newer than the latest release
+        if: steps.state.outputs.skip != 'true'
+        run: scripts/version.sh check-release
+
+      - name: Start release build (release.yml)
+        if: steps.state.outputs.skip != 'true'
+        run: |
+          TAG="v${{ steps.state.outputs.version }}"
+          gh workflow run release.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}" -f tag="$TAG"
+          echo "🚀 Dispatched release.yml for $TAG on ${{ github.ref_name }}"
+          echo "### 🚀 Release $TAG started" >> "$GITHUB_STEP_SUMMARY"
+          echo "Follow it under Actions → Release." >> "$GITHUB_STEP_SUMMARY"

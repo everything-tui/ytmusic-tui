@@ -1,0 +1,44 @@
+# Called by release.yml (dist post-announce job) after the GitHub Release exists.
+# Rewrites the release title and body from CHANGELOG.md, like Horizon's create-release:
+# all CHANGELOG entries since the previous release + install + downloads + compare link.
+name: Release notes
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release-notes:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          ref: ${{ fromJson(inputs.plan).announcement_tag }}
+
+      - name: Verify versions match
+        run: scripts/version.sh check
+
+      - name: Build release body
+        run: |
+          VERSION="${TAG#v}"
+          [ "$VERSION" = "$(scripts/version.sh version)" ] || { echo "::error::Tag $TAG does not match Cargo.toml $(scripts/version.sh version)"; exit 1; }
+          scripts/version.sh body "$VERSION" > "$RUNNER_TEMP/release-body.md"
+          cat "$RUNNER_TEMP/release-body.md"
+
+      - name: Update GitHub Release
+        run: |
+          gh release edit "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "$(scripts/version.sh title)" \
+            --notes-file "$RUNNER_TEMP/release-body.md"
+          echo "✅ Updated $(gh release view "$TAG" --repo "${{ github.repository }}" --json url --jq .url)"

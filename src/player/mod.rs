@@ -1,0 +1,864 @@
+pub mod download;
+pub mod engine;
+pub mod eq;
+pub mod eq_adaptive;
+pub mod jsc;
+pub mod opus;
+pub mod queue;
+pub mod resolver;
+pub mod source;
+
+pub use engine::SampleBuffer;
+pub use eq::{EqHandle, EqParams, BAND_COUNT, GAIN_MAX_DB, GAIN_MIN_DB, PRESETS};
+pub use eq_adaptive::{AdaptiveEq, AdaptiveProfile};
+
+use crate::action::{AppEvent, PlayerEvent};
+use crate::api::model::Track;
+use crate::paths::Paths;
+use crate::player::download::{Downloader, Refetch, Refetcher};
+use crate::player::engine::{EngineCmd, EngineHandle};
+use crate::player::queue::{PreviousResult, Queue, RepeatMode};
+use crate::player::resolver::{Resolver, Unplayable};
+use crate::player::source::{open_decoder_resilient, CancelToken, GrowingFile, SymphoniaSource};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tracing::{debug, info, warn};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackState {
+    Stopped,
+    Loading,
+    Playing,
+    Paused,
+    Buffering,
+}
+
+pub struct PlayerService {
+    pub queue: Queue,
+    pub state: PlaybackState,
+    pub duration: Option<Duration>,
+    pub volume: f32,
+    pub muted: bool,
+    pub volume_before_mute: f32,
+    pub autoplay: bool,
+    pub engine: EngineHandle,
+    resolver: Resolver,
+    downloader: Downloader,
+    event_tx: mpsc::UnboundedSender<AppEvent>,
+    paths: Arc<Paths>,
+    current: Option<Track>,
+    /// Bumped on every new play request so in-flight resolve/download tasks
+    /// can bail before calling `EngineCmd::Load` (avoids playing a stale track).
+    play_epoch: Arc<AtomicU64>,
+    /// Cancels the current load/stream so readers blocked on its download let go.
+    cancel: CancelToken,
+    /// A restored session is loaded paused with nothing in the engine yet;
+    /// the first play starts the track at `position`.
+    restored_pending: bool,
+    /// Resolve and fetch the start of likely next tracks ahead of time.
+    prewarm: bool,
+    /// Bumped per highlight prewarm so a stale one stops before downloading.
+    prewarm_epoch: Arc<AtomicU64>,
+}
+
+impl PlayerService {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        paths: Arc<Paths>,
+        volume: f32,
+        autoplay: bool,
+        cache_mb: u64,
+        prewarm: bool,
+        eq: EqParams,
+        event_tx: mpsc::UnboundedSender<AppEvent>,
+        viz_samples: SampleBuffer,
+    ) -> Self {
+        let (engine_tx, engine_rx) = crossbeam_channel::unbounded::<PlayerEvent>();
+        let eq_handle = EqHandle::new(eq);
+        let engine = EngineHandle::spawn_with_samples(engine_tx, viz_samples, eq_handle);
+
+        // Forward engine events to app
+        let app_tx = event_tx.clone();
+        std::thread::spawn(move || {
+            while let Ok(ev) = engine_rx.recv() {
+                let _ = app_tx.send(AppEvent::Player(ev));
+            }
+        });
+
+        let resolver = Resolver::new(paths.player_js_cache_dir());
+        let mut premium = resolver.subscribe_premium();
+        let premium_tx = event_tx.clone();
+        tokio::spawn(async move {
+            while premium.changed().await.is_ok() {
+                let status = *premium.borrow_and_update();
+                if premium_tx
+                    .send(AppEvent::Player(PlayerEvent::Premium(status)))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let downloader = Downloader::new(paths.audio_cache_dir(), cache_mb);
+
+        Self {
+            queue: Queue::default(),
+            state: PlaybackState::Stopped,
+            duration: None,
+            volume,
+            muted: false,
+            volume_before_mute: volume,
+            autoplay,
+            engine,
+            resolver,
+            downloader,
+            event_tx,
+            paths,
+            current: None,
+            play_epoch: Arc::new(AtomicU64::new(0)),
+            prewarm,
+            prewarm_epoch: Arc::new(AtomicU64::new(0)),
+            cancel: CancelToken::default(),
+            restored_pending: false,
+        }
+    }
+
+    pub fn set_eq(&mut self, params: EqParams) {
+        self.engine.eq.set(params);
+        self.engine.send(EngineCmd::SetEq(params));
+    }
+
+    pub async fn set_cookies(&self, cookies: Option<String>) {
+        // #region agent log
+        crate::debug_log::log(
+            "F",
+            "player/mod.rs:set_cookies",
+            "cookies updated",
+            serde_json::json!({
+                "present": cookies.as_ref().map(|c| !c.is_empty()).unwrap_or(false),
+                "len": cookies.as_ref().map(|c| c.len()).unwrap_or(0),
+            }),
+        );
+        // #endregion
+        self.resolver.set_cookies(cookies).await;
+    }
+
+    pub fn eq_params(&self) -> EqParams {
+        self.engine.eq.get()
+    }
+
+    pub fn take_samples(&self, out: &mut Vec<f32>) {
+        self.engine.take_samples(out);
+    }
+
+    pub fn current_track(&self) -> Option<&Track> {
+        self.current.as_ref().or_else(|| self.queue.current())
+    }
+
+    pub fn play_track(&mut self, track: Track) {
+        self.queue.play_track_now(track.clone());
+        self.start_current(Duration::ZERO);
+    }
+
+    pub fn play_tracks(&mut self, tracks: Vec<Track>, start: usize) {
+        if tracks.is_empty() {
+            return;
+        }
+        self.queue.replace(tracks, start);
+        self.start_current(Duration::ZERO);
+    }
+
+    /// The user is lingering on `track` in a list: resolve it and fetch its first
+    /// bytes so pressing play starts at once. Only the latest highlight counts.
+    pub fn prewarm_track(&self, track: &Track) {
+        if !self.prewarm
+            || self
+                .current
+                .as_ref()
+                .is_some_and(|t| t.video_id == track.video_id)
+        {
+            return;
+        }
+        let epoch = self.prewarm_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        let latest = self.prewarm_epoch.clone();
+        prewarm(
+            track.video_id.clone(),
+            self.resolver.clone(),
+            self.downloader.clone(),
+            move || latest.load(Ordering::SeqCst) == epoch,
+        );
+    }
+
+    /// Begin resolving/loading the current queue item without blocking the
+    /// player command loop. A newer `start_current` bumps `play_epoch` so any
+    /// older task drops its result instead of loading the wrong song.
+    pub fn start_current(&mut self, start: Duration) {
+        let Some(track) = self.queue.current().cloned() else {
+            return;
+        };
+        self.restored_pending = false;
+        let epoch = self.supersede();
+        let cancel = self.cancel.clone();
+        // Cut the previous stream immediately so a slow resolve can't keep
+        // playing a song the user already navigated away from.
+        self.engine.send(EngineCmd::Unload);
+        self.current = Some(track.clone());
+        self.state = PlaybackState::Loading;
+        self.set_position(start);
+        self.duration = track.duration;
+        // Show the new track right away, not only once its audio is ready.
+        let _ = self.event_tx.send(AppEvent::Player(PlayerEvent::Loading {
+            track: track.clone(),
+        }));
+
+        let upcoming: Vec<Track> = self
+            .queue
+            .tracks_in_play_order()
+            .iter()
+            .skip(self.queue.cursor() + 1)
+            .take(1 + UPCOMING_PREWARM)
+            .map(|t| (*t).clone())
+            .collect();
+        let prewarm_upcoming = self.prewarm;
+
+        let resolver = self.resolver.clone();
+        let downloader = self.downloader.clone();
+        let engine_tx = self.engine.cmd_tx.clone();
+        let event_tx = self.event_tx.clone();
+        let play_epoch = self.play_epoch.clone();
+        let volume = self.effective_volume();
+
+        tokio::spawn(async move {
+            let video_id = track.video_id.clone();
+            let title = track.title.clone();
+
+            // Cached files skip stream resolution entirely (~5s cold-start win on replays).
+            let need_resolve = !downloader.is_cached(&video_id);
+            // #region agent log
+            crate::debug_log::log(
+                "E",
+                "player/mod.rs:start_current",
+                "play start",
+                serde_json::json!({
+                    "video_id": video_id,
+                    "title": title,
+                    "cached": !need_resolve,
+                    "epoch": epoch,
+                }),
+            );
+            // #endregion
+            let file = if !need_resolve {
+                match GrowingFile::open_complete(&downloader.cached_path(&video_id)) {
+                    Ok(f) => Some(f),
+                    Err(e) => {
+                        warn!("open cached {video_id}: {e}; re-resolving");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let file = match file {
+                Some(f) => f,
+                None => {
+                    match resolve_download(
+                        epoch,
+                        &play_epoch,
+                        &video_id,
+                        &title,
+                        &resolver,
+                        &downloader,
+                        &event_tx,
+                    )
+                    .await
+                    {
+                        Some(f) => f,
+                        None => return,
+                    }
+                }
+            };
+            if play_epoch.load(Ordering::SeqCst) != epoch {
+                return;
+            }
+
+            // Probing blocks until enough of the download has arrived.
+            let opened = {
+                let cancel = cancel.clone();
+                tokio::task::spawn_blocking(move || open_source(file, &cancel)).await
+            };
+            if play_epoch.load(Ordering::SeqCst) != epoch {
+                return;
+            }
+            let (file, source) = match opened {
+                Ok(Ok(opened)) => opened,
+                Ok(Err(e)) => {
+                    // #region agent log
+                    crate::debug_log::log(
+                        "E",
+                        "player/mod.rs:start_current",
+                        "decoder failed",
+                        serde_json::json!({
+                            "title": title,
+                            "video_id": video_id,
+                            "error": e.to_string(),
+                        }),
+                    );
+                    // #endregion
+                    let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
+                        "Couldn't play {title}: {e}"
+                    ))));
+                    return;
+                }
+                Err(e) => {
+                    warn!("open decoder task: {e}");
+                    return;
+                }
+            };
+
+            let info = source.stream_info();
+            // Cached in a lesser rendition (before Premium or Opus support, or from
+            // a hedged start): fetch a better one in the background for next time.
+            let cached_kbps = info.kbps(track.duration.unwrap_or_default());
+            if let (false, Some(kbps)) = (need_resolve, cached_kbps) {
+                if !info.is_high(track.duration) {
+                    let perceived = crate::player::source::perceived_kbps(info.codec, kbps);
+                    upgrade_cached(
+                        video_id.clone(),
+                        perceived,
+                        resolver.clone(),
+                        downloader.clone(),
+                    );
+                }
+            }
+            let _ = event_tx.send(AppEvent::Player(PlayerEvent::Stream {
+                video_id: video_id.clone(),
+                info,
+            }));
+            let _ = engine_tx.send(EngineCmd::Load {
+                track,
+                file,
+                source,
+                start,
+                volume,
+                cancel,
+            });
+
+            let downloader2 = downloader.clone();
+            tokio::spawn(async move {
+                let _ = downloader2.enforce_lru();
+            });
+
+            let mut upcoming = upcoming.into_iter();
+            if let Some(next) = upcoming.next() {
+                prefetch_track(next, resolver.clone(), downloader.clone());
+            }
+            // Skipping further ahead starts from a prewarmed head too.
+            if prewarm_upcoming {
+                for t in upcoming {
+                    prewarm(t.video_id, resolver.clone(), downloader.clone(), || true);
+                }
+            }
+        });
+    }
+
+    /// Abandon whatever is loading or playing: in-flight tasks see a new epoch,
+    /// and readers blocked on a stalled download give up.
+    fn supersede(&mut self) -> u64 {
+        self.cancel.cancel();
+        self.cancel = CancelToken::default();
+        self.play_epoch.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Where playback is — the engine tracks the loaded stream; before that it
+    /// holds the start/restore position.
+    fn position(&self) -> Duration {
+        *self.engine.position.lock().unwrap()
+    }
+
+    fn set_position(&self, pos: Duration) {
+        *self.engine.position.lock().unwrap() = pos;
+    }
+
+    /// Resume playback; starts a restored session's track at its saved position.
+    pub fn resume(&mut self) {
+        if self.restored_pending {
+            self.start_current(self.position());
+        } else {
+            self.engine.send(EngineCmd::Play);
+        }
+    }
+
+    pub fn toggle(&mut self) {
+        if self.restored_pending {
+            self.start_current(self.position());
+            return;
+        }
+        match self.state {
+            PlaybackState::Playing => {
+                self.engine.send(EngineCmd::Pause);
+                self.state = PlaybackState::Paused;
+            }
+            PlaybackState::Paused => {
+                self.engine.send(EngineCmd::Play);
+                self.state = PlaybackState::Playing;
+            }
+            PlaybackState::Stopped => {
+                if self.queue.current().is_some() {
+                    self.start_current(self.position());
+                }
+            }
+            _ => {
+                self.engine.send(EngineCmd::Toggle);
+            }
+        }
+    }
+
+    fn skip_to_next(&mut self) {
+        if self.queue.next().is_some() {
+            self.start_current(Duration::ZERO);
+        } else {
+            self.supersede();
+            self.engine.send(EngineCmd::Stop);
+            self.state = PlaybackState::Stopped;
+            self.current = None;
+        }
+    }
+
+    pub fn next(&mut self) {
+        self.skip_to_next();
+    }
+
+    pub fn previous(&mut self) {
+        match self.queue.previous(self.position().as_secs_f64()) {
+            PreviousResult::Restart => self.seek(Duration::ZERO),
+            PreviousResult::Track => {
+                self.start_current(Duration::ZERO);
+            }
+            PreviousResult::None => {}
+        }
+    }
+
+    pub fn seek(&mut self, pos: Duration) {
+        // Set eagerly so rapid relative seeks stack instead of reading a stale base.
+        self.set_position(pos);
+        self.engine.send(EngineCmd::Seek(pos));
+    }
+
+    pub fn seek_relative(&mut self, delta: i64) {
+        let ms = self.position().as_millis() as i64 + delta * 1000;
+        let ms = ms.max(0) as u64;
+        let mut pos = Duration::from_millis(ms);
+        if let Some(d) = self.duration {
+            if pos > d {
+                pos = d;
+            }
+        }
+        self.seek(pos);
+    }
+
+    pub fn set_volume(&mut self, v: f32) {
+        self.volume = v.clamp(0.0, 1.0);
+        self.muted = false;
+        self.engine.send(EngineCmd::SetVolume(self.volume));
+    }
+
+    pub fn volume_delta(&mut self, delta: f32) {
+        self.set_volume(self.volume + delta);
+    }
+
+    pub fn toggle_mute(&mut self) {
+        if self.muted {
+            self.muted = false;
+            self.volume = self.volume_before_mute;
+        } else {
+            self.muted = true;
+            self.volume_before_mute = self.volume;
+            self.volume = 0.0;
+        }
+        self.engine
+            .send(EngineCmd::SetVolume(self.effective_volume()));
+    }
+
+    fn effective_volume(&self) -> f32 {
+        if self.muted {
+            0.0
+        } else {
+            self.volume
+        }
+    }
+
+    pub fn toggle_shuffle(&mut self) {
+        self.queue.toggle_shuffle();
+    }
+
+    pub fn cycle_repeat(&mut self) {
+        self.queue.cycle_repeat();
+    }
+
+    pub fn on_ended(&mut self) {
+        // Called from app when PlayerEvent::Ended arrives
+    }
+
+    pub fn handle_ended(&mut self) {
+        if self.queue.advance_on_end().is_some() {
+            self.start_current(Duration::ZERO);
+        } else {
+            self.supersede();
+            self.state = PlaybackState::Stopped;
+            self.current = None;
+        }
+    }
+
+    pub fn append_radio(&mut self, tracks: Vec<Track>) {
+        self.queue.append_radio(tracks);
+    }
+
+    pub fn restore_session(
+        &mut self,
+        tracks: Vec<Track>,
+        index: usize,
+        position: Duration,
+        shuffle: bool,
+        repeat: RepeatMode,
+    ) {
+        self.queue = Queue::from_session(tracks, index, shuffle, repeat);
+        self.set_position(position);
+        self.state = PlaybackState::Paused;
+        self.restored_pending = self.queue.current().is_some();
+        self.current = self.queue.current().cloned();
+        info!(
+            "restored session: {} tracks, index {index}, paused",
+            self.queue.len()
+        );
+    }
+
+    pub fn shutdown(&self) {
+        self.engine.send(EngineCmd::Shutdown);
+    }
+}
+
+async fn resolve_download(
+    epoch: u64,
+    play_epoch: &AtomicU64,
+    video_id: &str,
+    title: &str,
+    resolver: &Resolver,
+    downloader: &Downloader,
+    event_tx: &mpsc::UnboundedSender<AppEvent>,
+) -> Option<std::sync::Arc<GrowingFile>> {
+    let alive = || play_epoch.load(Ordering::SeqCst) == epoch;
+
+    async fn download_once(
+        video_id: &str,
+        stream: &crate::player::resolver::ResolvedStream,
+        resolver: &Resolver,
+        downloader: &Downloader,
+        event_tx: &mpsc::UnboundedSender<AppEvent>,
+    ) -> anyhow::Result<std::sync::Arc<GrowingFile>> {
+        let tx = event_tx.clone();
+        let vid = video_id.to_string();
+        downloader
+            .get(
+                video_id,
+                stream,
+                Some(refetcher(resolver, video_id)),
+                move |pct| {
+                    let _ = tx.send(AppEvent::Player(PlayerEvent::DownloadProgress {
+                        video_id: vid.clone(),
+                        pct,
+                    }));
+                },
+            )
+            .await
+    }
+
+    // Failover ladder for CDN 403 / stale URLs:
+    //  0 → soft retry (fresh visitor + same clients)
+    //  1 → skip the client that 403'd and try the next
+    //  2 → last chance after another soft refresh
+    for attempt in 0..3 {
+        if !alive() {
+            return None;
+        }
+        let stream = match resolver.resolve(video_id).await {
+            Ok(s) => {
+                // #region agent log
+                crate::debug_log::log(
+                    "B",
+                    "player/mod.rs:resolve_download",
+                    "resolve ok",
+                    serde_json::json!({
+                        "video_id": video_id,
+                        "attempt": attempt,
+                        "client": s.client_name,
+                        "filesize": s.filesize,
+                        "ext": s.ext,
+                        "url_host": s.url.split('/').nth(2).unwrap_or(""),
+                        "has_visitor_hdr": s.headers.contains_key("X-Goog-Visitor-Id"),
+                    }),
+                );
+                // #endregion
+                s
+            }
+            Err(e) => {
+                // #region agent log
+                crate::debug_log::log(
+                    "B",
+                    "player/mod.rs:resolve_download",
+                    "resolve failed",
+                    serde_json::json!({
+                        "video_id": video_id,
+                        "attempt": attempt,
+                        "error": e.to_string(),
+                    }),
+                );
+                // #endregion
+                if let Some(reason) = e.downcast_ref::<Unplayable>() {
+                    if alive() {
+                        let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
+                            "Couldn't play {title} ({reason}) — skipping"
+                        ))));
+                    }
+                    return None;
+                }
+                if attempt < 2 {
+                    warn!("resolve failed for {title}: {e}, retrying…");
+                    resolver.invalidate(video_id).await;
+                    resolver.clear_visitor().await;
+                    continue;
+                }
+                if alive() {
+                    warn!("resolve failed: {e}");
+                    let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
+                        "Couldn't play {title} — skipping"
+                    ))));
+                }
+                return None;
+            }
+        };
+        let client_name = stream.client_name.clone();
+        if !alive() {
+            return None;
+        }
+
+        match download_once(video_id, &stream, resolver, downloader, event_tx).await {
+            Ok(f) => {
+                // #region agent log
+                crate::debug_log::log(
+                    "A",
+                    "player/mod.rs:resolve_download",
+                    "download ok",
+                    serde_json::json!({
+                        "video_id": video_id,
+                        "attempt": attempt,
+                        "client": client_name,
+                    }),
+                );
+                // #endregion
+                resolver.clear_client_skips(video_id).await;
+                return Some(f);
+            }
+            Err(e) => {
+                let err = e.to_string();
+                let is_403 = err.contains("403");
+                // #region agent log
+                crate::debug_log::log(
+                    if is_403 { "A" } else { "D" },
+                    "player/mod.rs:resolve_download",
+                    "download failed",
+                    serde_json::json!({
+                        "video_id": video_id,
+                        "attempt": attempt,
+                        "client": client_name,
+                        "error": err,
+                        "is_403": is_403,
+                    }),
+                );
+                // #endregion
+                if !alive() {
+                    return None;
+                }
+                let next = match attempt {
+                    0 => "refreshing visitor and re-resolving…",
+                    1 => "skipping client and re-resolving…",
+                    _ => "giving up",
+                };
+                warn!("download failed for {title} via {client_name}: {e}; {next}");
+                match attempt {
+                    0 => {
+                        // Soft retry: googlevideo 403 is often a stale URL / visitor,
+                        // not a permanently broken client. Don't skip VISIONOS yet.
+                        resolver.invalidate(video_id).await;
+                        resolver.clear_visitor().await;
+                        continue;
+                    }
+                    1 => {
+                        resolver
+                            .invalidate_skipping_client(video_id, &client_name)
+                            .await;
+                        resolver.clear_visitor().await;
+                        continue;
+                    }
+                    _ => {
+                        if alive() {
+                            let _ = event_tx.send(AppEvent::Player(PlayerEvent::Error(format!(
+                                "Couldn't play {title} — skipping"
+                            ))));
+                        }
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Open a decoder for `file`, falling back to the finished cache file if the
+/// download was renamed out from under the first attempt.
+fn open_source(
+    file: Arc<GrowingFile>,
+    cancel: &CancelToken,
+) -> anyhow::Result<(Arc<GrowingFile>, SymphoniaSource)> {
+    let err = match open_decoder_resilient(file.clone(), cancel) {
+        Ok(source) => return Ok((file, source)),
+        Err(e) => e,
+    };
+    if cancel.is_cancelled() {
+        return Err(err);
+    }
+    let recovered = std::path::PathBuf::from(
+        file.path()
+            .to_string_lossy()
+            .trim_end_matches(".part")
+            .to_string(),
+    );
+    if !recovered.exists() {
+        return Err(err);
+    }
+    let file = GrowingFile::open_complete(&recovered)?;
+    let source = open_decoder_resilient(file.clone(), cancel)?;
+    Ok((file, source))
+}
+
+fn prefetch_track(track: Track, resolver: Resolver, downloader: Downloader) {
+    if downloader.is_cached(&track.video_id) {
+        return;
+    }
+    let video_id = track.video_id;
+    tokio::spawn(async move {
+        if let Ok(stream) = resolver.resolve(&video_id).await {
+            let refetch = Some(refetcher(&resolver, &video_id));
+            let _ = downloader.get(&video_id, &stream, refetch, |_| {}).await;
+        }
+    });
+}
+
+/// Tracks after the next one whose stream URL and first bytes are fetched ahead.
+const UPCOMING_PREWARM: usize = 2;
+
+/// Resolve `video_id` (the URL is cached) and keep its first bytes in memory.
+/// `wanted` is checked once resolved, before any download starts.
+fn prewarm(
+    video_id: String,
+    resolver: Resolver,
+    downloader: Downloader,
+    wanted: impl Fn() -> bool + Send + 'static,
+) {
+    if downloader.is_cached(&video_id) {
+        return;
+    }
+    tokio::spawn(async move {
+        let stream = match resolver.resolve(&video_id).await {
+            Ok(s) => s,
+            Err(e) => return debug!("prewarm resolve {video_id}: {e}"),
+        };
+        if !wanted() {
+            return;
+        }
+        if let Err(e) = downloader.prewarm(&video_id, &stream).await {
+            debug!("prewarm {video_id}: {e:#}");
+        }
+    });
+}
+
+/// Swap a cached file for a clearly better rendition (Premium, or Opus over AAC
+/// 128), or remember that none exists so the check runs once per track.
+/// `cached_kbps` is the cached file's bitrate in AAC terms.
+fn upgrade_cached(video_id: String, cached_kbps: u32, resolver: Resolver, downloader: Downloader) {
+    if downloader.is_best_available(&video_id) {
+        return;
+    }
+    tokio::spawn(async move {
+        let outcome = match resolver.best_stream(&video_id).await {
+            Ok(Some(stream)) => {
+                let better = stream.quality().map(|(codec, kbps)| {
+                    (
+                        codec,
+                        kbps,
+                        crate::player::source::perceived_kbps(codec, kbps),
+                    )
+                });
+                match better {
+                    // At least ~15% better, so VBR noise never re-downloads a file.
+                    Some((codec, kbps, perceived)) if perceived * 100 >= cached_kbps * 115 => {
+                        // No hedging: a backup stream may be the quality we're replacing.
+                        let refetch = Some(refetcher_inner(&resolver, &video_id, false));
+                        match downloader.upgrade(&video_id, &stream, refetch).await {
+                            Ok(()) => format!("upgraded to {codec} {kbps} kbps"),
+                            Err(e) => format!("upgrade failed: {e:#}"),
+                        }
+                    }
+                    _ => {
+                        downloader.mark_best_available(&video_id);
+                        "already the best available".to_string()
+                    }
+                }
+            }
+            Ok(None) => {
+                downloader.mark_best_available(&video_id);
+                "not playable anymore".to_string()
+            }
+            Err(e) => format!("will retry: {e:#}"),
+        };
+        debug!("cache upgrade {video_id}: {outcome}");
+        // #region agent log
+        crate::debug_log::log(
+            "D",
+            "player/mod.rs:upgrade_cached",
+            "cache upgrade",
+            serde_json::json!({ "video_id": video_id, "outcome": outcome }),
+        );
+        // #endregion
+    });
+}
+
+/// Lets a running download ask the resolver for a backup or fresh URL.
+fn refetcher(resolver: &Resolver, video_id: &str) -> Refetcher {
+    refetcher_inner(resolver, video_id, true)
+}
+
+fn refetcher_inner(resolver: &Resolver, video_id: &str, hedge: bool) -> Refetcher {
+    let resolver = resolver.clone();
+    let video_id = video_id.to_string();
+    Arc::new(move |want| {
+        let resolver = resolver.clone();
+        let video_id = video_id.clone();
+        Box::pin(async move {
+            match want {
+                Refetch::Alternate { .. } if !hedge => None,
+                Refetch::Alternate { exclude_client } => resolver
+                    .resolve_alternate(&video_id, &exclude_client)
+                    .await
+                    .ok(),
+                Refetch::SameFile { client, filesize } => {
+                    resolver
+                        .resolve_same_file(&video_id, &client, filesize)
+                        .await
+                }
+            }
+        })
+    })
+}

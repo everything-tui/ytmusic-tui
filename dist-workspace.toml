@@ -1,0 +1,40 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell", "homebrew"]
+# A GitHub repo to push Homebrew formulas to
+tap = "everything-tui/homebrew-tap"
+# Publish jobs to run in CI
+publish-jobs = ["homebrew"]
+# Rewrite release title/body from CHANGELOG.md (.github/workflows/release-notes.yml)
+post-announce-jobs = ["./release-notes"]
+# Releases are started by create-release.yml (push to `publish`), not by pushing a tag
+dispatch-releases = true
+# Target platforms to build apps for (Rust target-triple syntax).
+# No musl: ALSA (audio) and D-Bus (media controls) can't sensibly be linked statically.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Where to host releases
+hosting = "github"
+# Whether to install an updater program
+install-updater = false
+
+# Build aarch64 Linux natively (no cross toolchain for ALSA / D-Bus headers)
+[dist.github-custom-runners]
+# dist defaults to macos-14, which GitHub no longer offers
+aarch64-apple-darwin = "macos-15"
+aarch64-unknown-linux-gnu = "ubuntu-24.04-arm"
+
+# Linux build headers: alsa-sys (rodio/cpal) and libdbus-sys (souvlaki)
+[dist.dependencies.apt]
+libasound2-dev = "*"
+libdbus-1-dev = "*"
+pkg-config = "*"
