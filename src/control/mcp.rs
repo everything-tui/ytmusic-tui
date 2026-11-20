@@ -148,7 +148,10 @@ fn handle_call(paths: &Paths, params: &Value) -> Value {
             false,
         ),
         Ok(resp) => tool_result(
-            resp["error"].as_str().unwrap_or("unknown error").to_string(),
+            resp["error"]
+                .as_str()
+                .unwrap_or("unknown error")
+                .to_string(),
             true,
         ),
         Err(e) => tool_result(e.to_string(), true),
@@ -177,7 +180,13 @@ fn handle_message(paths: &Paths, msg: &Value) -> Option<Value> {
         "ping" => json!({}),
         "tools/list" => json!({ "tools": tools() }),
         "tools/call" => handle_call(paths, &params),
-        other => return Some(error_response(id, -32601, &format!("method not found: {other}"))),
+        other => {
+            return Some(error_response(
+                id,
+                -32601,
+                &format!("method not found: {other}"),
+            ))
+        }
     };
     Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
 }
@@ -193,7 +202,11 @@ pub fn run(paths: &Paths) -> Result<()> {
         }
         let reply = match serde_json::from_str::<Value>(&line) {
             Ok(msg) => handle_message(paths, &msg),
-            Err(e) => Some(error_response(Value::Null, -32700, &format!("parse error: {e}"))),
+            Err(e) => Some(error_response(
+                Value::Null,
+                -32700,
+                &format!("parse error: {e}"),
+            )),
         };
         if let Some(r) = reply {
             writeln!(stdout, "{r}")?;
@@ -209,7 +222,11 @@ mod tests {
 
     fn paths() -> Paths {
         let d = std::env::temp_dir().join("yt-tui-mcp-test");
-        Paths { config_dir: d.clone(), data_dir: d.clone(), cache_dir: d }
+        Paths {
+            config_dir: d.clone(),
+            data_dir: d.clone(),
+            cache_dir: d,
+        }
     }
 
     #[test]
@@ -217,18 +234,38 @@ mod tests {
         let p = paths();
         let init = handle_message(&p, &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}})).unwrap();
         assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
-        assert!(handle_message(&p, &json!({"jsonrpc":"2.0","method":"notifications/initialized"})).is_none());
-        let list = handle_message(&p, &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
-        let names: Vec<_> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(handle_message(
+            &p,
+            &json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+        )
+        .is_none());
+        let list =
+            handle_message(&p, &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
+        let names: Vec<_> = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
         assert!(names.contains(&"search") && names.contains(&"pause"));
-        assert!(!names.iter().any(|n| n.contains("login") || n.contains("cookie")));
+        assert!(!names
+            .iter()
+            .any(|n| n.contains("login") || n.contains("cookie")));
     }
 
     #[test]
     fn call_without_running_app_is_tool_error() {
-        let r = handle_message(&paths(), &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"pause"}})).unwrap();
+        let r = handle_message(
+            &paths(),
+            &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"pause"}}),
+        )
+        .unwrap();
         assert_eq!(r["result"]["isError"], true);
-        let r = handle_message(&paths(), &json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"logout"}})).unwrap();
+        let r = handle_message(
+            &paths(),
+            &json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"logout"}}),
+        )
+        .unwrap();
         assert_eq!(r["result"]["isError"], true);
     }
 }

@@ -132,7 +132,10 @@ impl InnertubeClient {
             }
         }
 
-        let resp = req.send().await.with_context(|| format!("innertube {endpoint} request"))?;
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("innertube {endpoint} request"))?;
         let status = resp.status();
 
         // Absorb rotated session cookies (SIDCC / PSIDTS) so the jar stays alive longer.
@@ -156,7 +159,10 @@ impl InnertubeClient {
 
         let text = resp.text().await?;
         if !status.is_success() {
-            anyhow::bail!("innertube {endpoint} HTTP {status}: {}", &text[..text.len().min(200)]);
+            anyhow::bail!(
+                "innertube {endpoint} HTTP {status}: {}",
+                &text[..text.len().min(200)]
+            );
         }
         let json: Value = serde_json::from_str(&text).context("parse innertube json")?;
 
@@ -251,9 +257,7 @@ impl InnertubeClient {
             }
             let resp = match c {
                 // Newer responses take the token in the body…
-                Continuation::Command(t) => {
-                    self.post("browse", json!({ "continuation": t })).await
-                }
+                Continuation::Command(t) => self.post("browse", json!({ "continuation": t })).await,
                 // …older `nextContinuationData` ones as query parameters.
                 Continuation::Next(t) => {
                     self.post_with_query(
@@ -280,7 +284,9 @@ impl InnertubeClient {
 
     /// First page plus every continuation page of a library browse.
     async fn browse_all(&self, browse_id: &str, what: &str) -> Result<Vec<Value>> {
-        let json = self.post("browse", json!({ "browseId": browse_id })).await?;
+        let json = self
+            .post("browse", json!({ "browseId": browse_id }))
+            .await?;
         self.require_signed_in(&json, what)?;
         let token = continuation_token(&json);
         let mut pages = vec![json];
@@ -338,7 +344,9 @@ impl InnertubeClient {
     }
 
     pub async fn library_albums(&self) -> Result<Vec<Album>> {
-        let pages = self.browse_all("FEmusic_liked_albums", "library albums").await?;
+        let pages = self
+            .browse_all("FEmusic_liked_albums", "library albums")
+            .await?;
         Ok(pages.iter().flat_map(parse_library_albums).collect())
     }
 
@@ -445,7 +453,7 @@ fn search_params(filter: &str) -> Option<&'static str> {
         "songs" => Some("EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"),
         "albums" => Some("EgWKAQIYAWoKEAkQBRAKEAMQBA%3D%3D"),
         "artists" => Some("EgWKAQIgAWoKEAkQBRAKEAMQBA%3D%3D"),
-        "playlists" => Some("EgeKAQQoADgBaggoQCRAHENIEEAoQAQ%3D%3D"),
+        "playlists" => Some("Eg-KAQwIABAAGAAgACgBMABqChAEEAMQCRAFEAo%3D"),
         _ => None,
     }
 }
@@ -461,7 +469,9 @@ pub(crate) fn parse_search(json: &Value) -> SearchBundle {
             bundle.albums.push(a);
         } else if let Some(a) = parse_two_row_artist(item) {
             bundle.artists.push(a);
-        } else if let Some(p) = parse_two_row_playlist(item) {
+        } else if let Some(p) =
+            parse_two_row_playlist(item).or_else(|| parse_responsive_playlist(item))
+        {
             bundle.playlists.push(p);
         }
     });
@@ -470,10 +480,7 @@ pub(crate) fn parse_search(json: &Value) -> SearchBundle {
 
 fn parse_suggestions(json: &Value) -> Vec<String> {
     let mut out = Vec::new();
-    if let Some(arr) = json
-        .pointer("/contents")
-        .and_then(|v| v.as_array())
-    {
+    if let Some(arr) = json.pointer("/contents").and_then(|v| v.as_array()) {
         for c in arr {
             collect_suggestion_texts(c, &mut out);
         }
@@ -536,12 +543,10 @@ fn parse_album(json: &Value, id: &str) -> Result<Album> {
     let title = header
         .and_then(|h| runs_text(h.pointer("/title/runs").unwrap_or(&Value::Null)))
         .unwrap_or_else(|| "Album".into());
-    let artists = header
-        .map(parse_subtitle_artists)
-        .unwrap_or_default();
+    let artists = header.map(parse_subtitle_artists).unwrap_or_default();
     let year = header.and_then(|h| {
         runs_text(h.pointer("/subtitle/runs").unwrap_or(&Value::Null))
-            .and_then(|s| s.split('•').last().map(|x| x.trim().to_string()))
+            .and_then(|s| s.split('•').next_back().map(|x| x.trim().to_string()))
     });
     let thumbnails = header
         .map(|h| parse_thumbnails(h.pointer("/thumbnail").unwrap_or(&Value::Null)))
@@ -579,9 +584,8 @@ fn parse_artist(json: &Value, id: &str) -> Result<Artist> {
     let thumbnails = header
         .map(|h| parse_thumbnails(h.pointer("/thumbnail").unwrap_or(&Value::Null)))
         .unwrap_or_default();
-    let description = header.and_then(|h| {
-        runs_text(h.pointer("/description/runs").unwrap_or(&Value::Null))
-    });
+    let description =
+        header.and_then(|h| runs_text(h.pointer("/description/runs").unwrap_or(&Value::Null)));
 
     let mut top_songs = Vec::new();
     let mut albums = Vec::new();
@@ -700,7 +704,7 @@ fn parse_watch_playlist(json: &Value) -> (Vec<Track>, Option<String>) {
         .and_then(|v| v.as_array())
         .or_else(|| {
             json.pointer("/contents/singleColumnMusicWatchNextResultsRenderer/tabbedRenderer/watchNextTabbedResultsRenderer/tabs")
-                .and_then(|_| None)
+                .and(None)
         })
     {
         for item in arr {
@@ -741,9 +745,8 @@ fn parse_lyrics_plain(json: &Value) -> Option<String> {
     find_key(json, "messageRenderer")
         .and_then(|m| runs_text(m.pointer("/text/runs").unwrap_or(&Value::Null)))
         .or_else(|| {
-            find_key(json, "musicDescriptionShelfRenderer").and_then(|m| {
-                runs_text(m.pointer("/description/runs").unwrap_or(&Value::Null))
-            })
+            find_key(json, "musicDescriptionShelfRenderer")
+                .and_then(|m| runs_text(m.pointer("/description/runs").unwrap_or(&Value::Null)))
         })
 }
 
@@ -849,7 +852,8 @@ fn parse_two_row_album(item: &Value) -> Option<Album> {
         .pointer("/browseEndpointContextSupportedConfigs/browseEndpointContextMusicConfig/pageType")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    if page_type != "MUSIC_PAGE_TYPE_ALBUM" && !browse.get("browseId")?.as_str()?.starts_with("MPREb_")
+    if page_type != "MUSIC_PAGE_TYPE_ALBUM"
+        && !browse.get("browseId")?.as_str()?.starts_with("MPREb_")
     {
         // still allow MPREb
         if !browse.get("browseId")?.as_str()?.starts_with("MPRE") {
@@ -879,7 +883,9 @@ fn parse_two_row_artist(item: &Value) -> Option<Artist> {
     let id = browse.get("browseId")?.as_str()?.to_string();
     if !id.starts_with("UC") {
         let page_type = browse
-            .pointer("/browseEndpointContextSupportedConfigs/browseEndpointContextMusicConfig/pageType")
+            .pointer(
+                "/browseEndpointContextSupportedConfigs/browseEndpointContextMusicConfig/pageType",
+            )
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if page_type != "MUSIC_PAGE_TYPE_ARTIST" {
@@ -988,7 +994,11 @@ fn parse_artist_runs(runs: &Value) -> Vec<ArtistRef> {
         .filter_map(|run| {
             let name = run.get("text")?.as_str()?.to_string();
             // separator runs such as ", " / " & " / " • " carry no artist
-            if name.trim().chars().all(|c| c.is_whitespace() || "•&,/·".contains(c)) {
+            if name
+                .trim()
+                .chars()
+                .all(|c| c.is_whitespace() || "•&,/·".contains(c))
+            {
                 return None;
             }
             // skip duration-like
@@ -1102,10 +1112,7 @@ fn extract_track_duration(r: &Value) -> Option<Duration> {
                 for run in runs {
                     if let Some(s) = run.get("text").and_then(|v| v.as_str()) {
                         let t = s.trim();
-                        if !t.is_empty()
-                            && !t.contains(' ')
-                            && parse_duration_label(t).is_some()
-                        {
+                        if !t.is_empty() && !t.contains(' ') && parse_duration_label(t).is_some() {
                             return parse_duration_label(t);
                         }
                     }
@@ -1290,6 +1297,29 @@ fn _debug_keys(json: &Value) {
     let _ = json;
 }
 
+fn cookie_set(header: &str) -> std::collections::BTreeMap<String, String> {
+    manual::cookie_map(header).into_iter().collect()
+}
+
+/// Saves the raw response of a signed-in list that parsed to nothing, so a changed YouTube
+/// layout can be diagnosed instead of silently showing an empty list.
+fn dump_if_empty(name: &str, empty: bool, json: &Value) {
+    if !empty {
+        return;
+    }
+    let dir = std::env::temp_dir().join("yt-tui-debug");
+    let path = dir.join(format!("{name}.json"));
+    let saved = std::fs::create_dir_all(&dir)
+        .and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(json).unwrap_or_default()));
+    match saved {
+        Ok(()) => warn!(
+            "{name}: signed-in response parsed to 0 items; raw saved to {}",
+            path.display()
+        ),
+        Err(e) => warn!("{name}: parsed to 0 items (could not save raw response: {e})"),
+    }
+}
+
 #[cfg(test)]
 mod fixture_tests {
     use super::*;
@@ -1438,24 +1468,14 @@ mod fixture_tests {
         assert_eq!(playlists[0].title, "Late Night Mix");
         assert_eq!(playlists[0].author.as_deref(), Some("YouTube Music"));
     }
-}
 
-fn cookie_set(header: &str) -> std::collections::BTreeMap<String, String> {
-    manual::cookie_map(header).into_iter().collect()
-}
-
-/// Saves the raw response of a signed-in list that parsed to nothing, so a changed YouTube
-/// layout can be diagnosed instead of silently showing an empty list.
-fn dump_if_empty(name: &str, empty: bool, json: &Value) {
-    if !empty {
-        return;
-    }
-    let dir = std::env::temp_dir().join("yt-tui-debug");
-    let path = dir.join(format!("{name}.json"));
-    let saved = std::fs::create_dir_all(&dir)
-        .and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(json).unwrap_or_default()));
-    match saved {
-        Ok(()) => warn!("{name}: signed-in response parsed to 0 items; raw saved to {}", path.display()),
-        Err(e) => warn!("{name}: parsed to 0 items (could not save raw response: {e})"),
+    #[test]
+    fn parse_search_playlist_rows() {
+        let raw = include_str!("../../tests/fixtures/search_playlists.json");
+        let json: Value = serde_json::from_str(raw).unwrap();
+        let bundle = parse_search(&json);
+        assert_eq!(bundle.playlists.len(), 20);
+        assert!(bundle.tracks.is_empty());
+        assert!(bundle.playlists.iter().all(|p| !p.id.starts_with("VL")));
     }
 }

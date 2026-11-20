@@ -1,6 +1,8 @@
 use crate::action::Action;
 use crate::api::model::Track;
-use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig};
+use souvlaki::{
+    MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
+};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{info, warn};
@@ -92,9 +94,7 @@ fn init_controls(pending: Arc<Mutex<Vec<Action>>>) -> Result<MediaControls, souv
                 souvlaki::SeekDirection::Forward => {
                     Some(Action::SeekForward(Duration::from_secs(5)))
                 }
-                souvlaki::SeekDirection::Backward => {
-                    Some(Action::SeekBack(Duration::from_secs(5)))
-                }
+                souvlaki::SeekDirection::Backward => Some(Action::SeekBack(Duration::from_secs(5))),
             },
             MediaControlEvent::SeekBy(dir, dur) => match dir {
                 souvlaki::SeekDirection::Forward => Some(Action::SeekForward(dur)),

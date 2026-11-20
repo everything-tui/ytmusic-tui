@@ -80,7 +80,10 @@ pub fn render_track_list<T: Borrow<Track>>(
     };
 
     let mut widths = vec![Constraint::Length(4), Constraint::Fill(4)];
-    let mut header = vec![Cell::from(Line::from("#").right_aligned()), Cell::from("Title")];
+    let mut header = vec![
+        Cell::from(Line::from("#").right_aligned()),
+        Cell::from("Title"),
+    ];
     if show_artist {
         widths.push(Constraint::Fill(3));
         header.push(Cell::from("Artist"));
@@ -138,7 +141,8 @@ pub fn render_track_list<T: Borrow<Track>>(
             if !show_artist {
                 let artist = t.artist_names();
                 let tt = truncate(&t.title, budget);
-                let rest = budget.saturating_sub(unicode_width::UnicodeWidthStr::width(tt.as_str()) + 3);
+                let rest =
+                    budget.saturating_sub(unicode_width::UnicodeWidthStr::width(tt.as_str()) + 3);
                 title_spans.push(Span::styled(tt, title_style));
                 if rest > 2 && !artist.is_empty() {
                     title_spans.push(Span::styled(format!(" · {}", truncate(&artist, rest)), sub));
@@ -147,7 +151,10 @@ pub fn render_track_list<T: Borrow<Track>>(
                 title_spans.push(Span::styled(truncate(&t.title, budget), title_style));
             }
             if t.explicit {
-                title_spans.push(Span::styled(" E ", Style::default().fg(theme.dim).bg(theme.bg_selected)));
+                title_spans.push(Span::styled(
+                    " E ",
+                    Style::default().fg(theme.dim).bg(theme.bg_selected),
+                ));
             }
             if t.from_radio {
                 title_spans.push(Span::styled(" radio", theme.faint()));
@@ -177,7 +184,9 @@ pub fn render_track_list<T: Borrow<Track>>(
 
     let mut ts = TableState::new();
     if !opts.no_selection && !tracks.is_empty() {
-        ts = ts.with_selected(Some(state.selected.min(tracks.len() - 1).saturating_sub(offset)));
+        ts = ts.with_selected(Some(
+            state.selected.min(tracks.len() - 1).saturating_sub(offset),
+        ));
     }
     let table = Table::new(rows, widths)
         .header(Row::new(header).style(theme.muted()).bottom_margin(1))
@@ -257,7 +266,11 @@ pub fn render_item_list(
     let visible = area.height as usize;
     let needs_bar = items.len() > visible;
     let list_area = Rect {
-        width: if needs_bar { area.width - 1 } else { area.width },
+        width: if needs_bar {
+            area.width - 1
+        } else {
+            area.width
+        },
         ..area
     };
     let show_sub = list_area.width >= 40;
@@ -285,7 +298,8 @@ pub fn render_item_list(
             Row::new(cells)
         })
         .collect();
-    let mut ts = TableState::new().with_selected(Some(selected.min(items.len() - 1).saturating_sub(offset)));
+    let mut ts =
+        TableState::new().with_selected(Some(selected.min(items.len() - 1).saturating_sub(offset)));
     let table = Table::new(rows, widths)
         .column_spacing(2)
         .row_highlight_style(theme.row_selected());

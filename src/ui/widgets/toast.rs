@@ -66,7 +66,12 @@ fn place(toasts: &[Toast], area: Rect) -> Vec<Placed<'_>> {
         return out;
     }
     let mut bottom = area.y + area.height.saturating_sub(1);
-    for t in toasts.iter().rev().filter(|t| !t.expired()).take(MAX_VISIBLE) {
+    for t in toasts
+        .iter()
+        .rev()
+        .filter(|t| !t.expired())
+        .take(MAX_VISIBLE)
+    {
         let max_w = MAX_WIDTH.min(area.width.saturating_sub(4));
         let text_w = max_w.saturating_sub(8) as usize;
         let lines = wrap_lines(&t.message, text_w, 2);
@@ -83,7 +88,11 @@ fn place(toasts: &[Toast], area: Rect) -> Vec<Placed<'_>> {
             height,
         };
         bottom = rect.y.saturating_sub(1);
-        out.push(Placed { rect, toast: t, lines });
+        out.push(Placed {
+            rect,
+            toast: t,
+            lines,
+        });
     }
     out
 }
@@ -115,9 +124,23 @@ pub fn render_toasts(toasts: &[Toast], area: Rect, buf: &mut Buffer, theme: &The
         for (i, l) in p.lines.iter().enumerate() {
             let y = r.y + 1 + i as u16;
             if i == 0 {
-                buf.set_string(r.x + 2, y, icon, Style::default().fg(color).add_modifier(Modifier::BOLD).bg(theme.bg_modal));
+                buf.set_string(
+                    r.x + 2,
+                    y,
+                    icon,
+                    Style::default()
+                        .fg(color)
+                        .add_modifier(Modifier::BOLD)
+                        .bg(theme.bg_modal),
+                );
             }
-            buf.set_stringn(r.x + 5, y, l, r.width.saturating_sub(6) as usize, theme.normal().patch(bg));
+            buf.set_stringn(
+                r.x + 5,
+                y,
+                l,
+                r.width.saturating_sub(6) as usize,
+                theme.normal().patch(bg),
+            );
         }
     }
 }

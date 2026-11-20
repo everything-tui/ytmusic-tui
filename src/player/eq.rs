@@ -11,8 +11,9 @@ pub const BAND_FREQS_HZ: [f32; BAND_COUNT] = [
     32.0, 64.0, 125.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0, 16_000.0,
 ];
 /// Short labels for the TUI (freq shown separately).
-pub const BAND_LABELS: [&str; BAND_COUNT] =
-    ["32", "64", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
+pub const BAND_LABELS: [&str; BAND_COUNT] = [
+    "32", "64", "125", "250", "500", "1k", "2k", "4k", "8k", "16k",
+];
 pub const GAIN_MIN_DB: f32 = -12.0;
 pub const GAIN_MAX_DB: f32 = 12.0;
 /// ~1-octave bandwidth — typical graphic EQ Q.
@@ -353,7 +354,10 @@ mod tests {
         let before = rms(&buf);
         process_mono(&mut buf, sr, &EqParams::default());
         let after = rms(&buf);
-        assert!((after - before).abs() / before < 0.02, "flat changed rms {before} → {after}");
+        assert!(
+            (after - before).abs() / before < 0.02,
+            "flat changed rms {before} → {after}"
+        );
     }
 
     #[test]

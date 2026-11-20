@@ -30,7 +30,11 @@ pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, status: &str) {
         let y = r.y + 5 + i as u16 * 2;
         let key_label = format!("{key:^5}");
         pill(buf, ox, y, &key_label, i == 0, theme);
-        let style = if i == 0 { theme.heading() } else { theme.normal() };
+        let style = if i == 0 {
+            theme.heading()
+        } else {
+            theme.normal()
+        };
         buf.set_string(ox + 9, y, label, style);
     }
 

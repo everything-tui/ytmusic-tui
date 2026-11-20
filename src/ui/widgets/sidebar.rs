@@ -79,7 +79,11 @@ impl<'a> Sidebar<'a> {
             let active = self.active_tab == Some(i);
             let style = if active {
                 let pill = self.pill_bg();
-                fill(buf, Rect::new(area.x + 1, y, 3, 1), Style::default().bg(pill));
+                fill(
+                    buf,
+                    Rect::new(area.x + 1, y, 3, 1),
+                    Style::default().bg(pill),
+                );
                 theme.accent_bold().bg(pill)
             } else {
                 theme.muted().patch(bg)
@@ -102,7 +106,14 @@ impl<'a> Sidebar<'a> {
         let theme = self.theme;
         // Accents read much louder on light backgrounds, so tint them half as strongly.
         let strength = if self.focused { 0.28 } else { 0.15 };
-        theme.tint(theme.bg_hover, if theme.light { strength / 2.0 } else { strength })
+        theme.tint(
+            theme.bg_hover,
+            if theme.light {
+                strength / 2.0
+            } else {
+                strength
+            },
+        )
     }
 
     fn render_full(&self, area: Rect, buf: &mut Buffer, hit: &mut HitMap) {
@@ -131,8 +142,7 @@ impl<'a> Sidebar<'a> {
         );
 
         // Nav in two groups; the active entry is a tinted pill with an accent edge.
-        const GROUPS: [(&str, std::ops::Range<usize>); 2] =
-            [("Discover", 0..3), ("Playing", 3..5)];
+        const GROUPS: [(&str, std::ops::Range<usize>); 2] = [("Discover", 0..3), ("Playing", 3..5)];
         let mut y = area.y + 4;
         'groups: for (title, range) in GROUPS {
             if y + 1 >= bottom {
@@ -152,7 +162,11 @@ impl<'a> Sidebar<'a> {
                 if active {
                     let pill_bg = self.pill_bg();
                     let st = Style::default().bg(pill_bg);
-                    fill(buf, Rect::new(area.x + 1, y, area.width.saturating_sub(2), 1), st);
+                    fill(
+                        buf,
+                        Rect::new(area.x + 1, y, area.width.saturating_sub(2), 1),
+                        st,
+                    );
                     buf.set_string(area.x + 1, y, "▎", theme.accent().patch(st));
                     buf.set_string(x, y, icon, theme.accent_bold().patch(st));
                     buf.set_stringn(label_x, y, label, label_w, theme.heading().patch(st));
@@ -204,18 +218,8 @@ impl<'a> Sidebar<'a> {
         if account_y >= nav_end {
             let avatar = theme.accent_bold().bg(theme.tint(theme.bg_hover, 0.28));
             let (initial, chip, name, name_style) = match self.account {
-                Some(n) => (
-                    initial_of(n),
-                    avatar,
-                    n.to_string(),
-                    theme.normal(),
-                ),
-                None if self.signed_in => (
-                    '●',
-                    avatar,
-                    "Signed in".into(),
-                    theme.normal(),
-                ),
+                Some(n) => (initial_of(n), avatar, n.to_string(), theme.normal()),
+                None if self.signed_in => ('●', avatar, "Signed in".into(), theme.normal()),
                 None => (
                     '?',
                     Style::default().fg(theme.dim).bg(theme.bg_selected),
@@ -241,7 +245,10 @@ impl<'a> Sidebar<'a> {
             if let Some((tier, style)) = tier {
                 buf.set_stringn(x + 3, account_y + 1, tier, room, style.patch(bg));
             }
-            hit.buttons.push((Rect::new(area.x, account_y, area.width, 1), Action::AccountMenu));
+            hit.buttons.push((
+                Rect::new(area.x, account_y, area.width, 1),
+                Action::AccountMenu,
+            ));
         }
         let status_y = bottom.saturating_sub(2);
         if status_y >= nav_end {
@@ -261,7 +268,10 @@ impl<'a> Sidebar<'a> {
                 w,
             );
             let mcp_w = (label.width() as u16 + 2).min(w);
-            hit.buttons.push((Rect::new(area.x, status_y, x - area.x + mcp_w, 1), Action::ToggleMcp));
+            hit.buttons.push((
+                Rect::new(area.x, status_y, x - area.x + mcp_w, 1),
+                Action::ToggleMcp,
+            ));
             // "? help" when it fits beside the status, a lone "?" otherwise.
             let help: &[(&str, Style)] = if w >= mcp_w + 8 {
                 &[("?", theme.dim()), (" help", theme.faint())]
@@ -288,7 +298,7 @@ impl<'a> Sidebar<'a> {
         // Visualizer sits directly above the cover when there is room for it.
         const VIZ_H: u16 = 3;
         let room = footer_top - nav_end - 1;
-        if room >= need + VIZ_H + 1 {
+        if room > need + VIZ_H {
             let viz = Rect::new(x, top - VIZ_H - 1, side, VIZ_H);
             render_visualizer(self.visualizer, viz, buf, theme, true);
         } else if room >= need + 2 {

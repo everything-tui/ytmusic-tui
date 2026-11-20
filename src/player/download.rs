@@ -130,7 +130,12 @@ impl Downloader {
     /// Replace the cached file of `video_id` with `stream` (a better rendition).
     /// Downloads beside it and swaps atomically, so a reader playing the old file
     /// keeps its handle and the next play gets the new one.
-    pub async fn upgrade(&self, video_id: &str, stream: &ResolvedStream, refetch: Option<Refetcher>) -> Result<()> {
+    pub async fn upgrade(
+        &self,
+        video_id: &str,
+        stream: &ResolvedStream,
+        refetch: Option<Refetcher>,
+    ) -> Result<()> {
         let key = format!("{video_id}#upgrade");
         let tmp_path = self.cache_dir.join(format!("{video_id}.upgrade"));
         let gf = {
@@ -206,7 +211,11 @@ impl Downloader {
         }
         let mut heads = self.heads.lock();
         if heads.len() >= MAX_HEADS {
-            if let Some(oldest) = heads.iter().min_by_key(|(_, h)| h.at).map(|(k, _)| k.clone()) {
+            if let Some(oldest) = heads
+                .iter()
+                .min_by_key(|(_, h)| h.at)
+                .map(|(k, _)| k.clone())
+            {
                 heads.remove(&oldest);
             }
         }
@@ -474,7 +483,12 @@ struct Body {
 }
 
 /// Connect from byte `from` and read until `want` bytes arrived (or EOF).
-async fn open_body(client: reqwest::Client, stream: ResolvedStream, from: u64, want: u64) -> Result<Body> {
+async fn open_body(
+    client: reqwest::Client,
+    stream: ResolvedStream,
+    from: u64,
+    want: u64,
+) -> Result<Body> {
     // Prefer the known content length as the end; open-ended otherwise.
     let to = stream.filesize.filter(|&n| n > from).map(|n| n - 1);
     let resp = range_request(&client, &stream, from, to)
@@ -506,9 +520,13 @@ async fn open_body(client: reqwest::Client, stream: ResolvedStream, from: u64, w
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     if from > 0 {
-        let start = content_range
-            .as_deref()
-            .and_then(|s| s.strip_prefix("bytes ")?.split('-').next()?.parse::<u64>().ok());
+        let start = content_range.as_deref().and_then(|s| {
+            s.strip_prefix("bytes ")?
+                .split('-')
+                .next()?
+                .parse::<u64>()
+                .ok()
+        });
         if start != Some(from) {
             anyhow::bail!("server ignored resume offset {from} ({content_range:?})");
         }
@@ -538,7 +556,11 @@ async fn open_body(client: reqwest::Client, stream: ResolvedStream, from: u64, w
 
 /// Open the download; when the first bytes are slow, race a backup stream from
 /// another client and keep whichever delivers first.
-async fn open_hedged(client: &reqwest::Client, stream: ResolvedStream, refetch: Option<&Refetcher>) -> Result<Body> {
+async fn open_hedged(
+    client: &reqwest::Client,
+    stream: ResolvedStream,
+    refetch: Option<&Refetcher>,
+) -> Result<Body> {
     let primary = open_body(client.clone(), stream.clone(), 0, READY_BYTES);
     tokio::pin!(primary);
     let Some(refetch) = refetch else {
@@ -733,7 +755,10 @@ async fn download_stream(
         // #endregion
         match resumed {
             Ok(body) => {
-                debug!("download slow; resumed at {written} via {}", body.stream.client_name);
+                debug!(
+                    "download slow; resumed at {written} via {}",
+                    body.stream.client_name
+                );
                 current = body.stream;
                 rest = body.rest;
             }
@@ -781,7 +806,9 @@ mod tests {
         /// Headers only after this long.
         SlowStart(Duration),
         /// The first bytes fast, then a trickle.
-        Throttle { fast: usize },
+        Throttle {
+            fast: usize,
+        },
     }
 
     /// Minimal googlevideo stand-in: honours `Range`, answers 206.
@@ -791,13 +818,17 @@ mod tests {
         let routes = Arc::new(routes);
         tokio::spawn(async move {
             loop {
-                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
                 let routes = routes.clone();
                 tokio::spawn(async move {
                     let mut req = Vec::new();
                     let mut buf = [0u8; 1024];
                     while !req.windows(4).any(|w| w == b"\r\n\r\n") {
-                        let Ok(n) = sock.read(&mut buf).await else { return };
+                        let Ok(n) = sock.read(&mut buf).await else {
+                            return;
+                        };
                         if n == 0 {
                             return;
                         }
@@ -806,16 +837,26 @@ mod tests {
                     let req = String::from_utf8_lossy(&req).to_string();
                     let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
                     let Some((_, serve, data)) = routes.iter().find(|(p, ..)| *p == path) else {
-                        let _ = sock.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n").await;
+                        let _ = sock
+                            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                            .await;
                         return;
                     };
                     let range = req
                         .lines()
-                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("range: bytes=").map(str::to_string))
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("range: bytes=")
+                                .map(str::to_string)
+                        })
                         .unwrap_or_else(|| "0-".into());
                     let (a, b) = range.split_once('-').unwrap();
                     let a: usize = a.trim().parse().unwrap();
-                    let b: usize = b.trim().parse().unwrap_or(data.len() - 1).min(data.len() - 1);
+                    let b: usize = b
+                        .trim()
+                        .parse()
+                        .unwrap_or(data.len() - 1)
+                        .min(data.len() - 1);
                     if let Serve::SlowStart(d) = serve {
                         tokio::time::sleep(*d).await;
                     }
@@ -891,7 +932,9 @@ mod tests {
         Arc::new(move |want| {
             let s = match want {
                 Refetch::Alternate { .. } => alt.clone(),
-                Refetch::SameFile { filesize, .. } => same.clone().filter(|s| s.filesize == Some(filesize)),
+                Refetch::SameFile { filesize, .. } => {
+                    same.clone().filter(|s| s.filesize == Some(filesize))
+                }
             };
             Box::pin(async move { s })
         })
@@ -969,14 +1012,23 @@ mod tests {
     #[tokio::test]
     async fn prewarmed_head_starts_at_once() {
         let file = data(700_000, 1);
-        let base = cdn(vec![("/a", Serve::SlowStart(Duration::from_millis(1500)), file.clone())]).await;
+        let base = cdn(vec![(
+            "/a",
+            Serve::SlowStart(Duration::from_millis(1500)),
+            file.clone(),
+        )])
+        .await;
         let dl = downloader("head");
         let s = stream(format!("{base}/a"), "VISIONOS", &file, 60.0);
         // Prewarming waits out the slow start; playing afterwards doesn't.
         dl.prewarm("v", &s).await.unwrap();
         let t = Instant::now();
         let gf = dl.get("v", &s, None, |_| {}).await.unwrap();
-        assert!(t.elapsed() < Duration::from_millis(300), "{:?}", t.elapsed());
+        assert!(
+            t.elapsed() < Duration::from_millis(300),
+            "{:?}",
+            t.elapsed()
+        );
         assert!(gf.len() >= HEAD_BYTES);
         assert_eq!(finished(&dl, &gf, "v").await, *file);
     }
@@ -986,7 +1038,11 @@ mod tests {
         let primary = data(600_000, 1);
         let backup = data(500_000, 2);
         let base = cdn(vec![
-            ("/slow", Serve::SlowStart(Duration::from_secs(10)), primary.clone()),
+            (
+                "/slow",
+                Serve::SlowStart(Duration::from_secs(10)),
+                primary.clone(),
+            ),
             ("/fast", Serve::Fast, backup.clone()),
         ])
         .await;
@@ -994,8 +1050,15 @@ mod tests {
         let s = stream(format!("{base}/slow"), "WEB_REMIX", &primary, 60.0);
         let alt = stream(format!("{base}/fast"), "VISIONOS", &backup, 60.0);
         let t = Instant::now();
-        let gf = dl.get("v", &s, Some(refetcher(Some(alt), None)), |_| {}).await.unwrap();
-        assert!(t.elapsed() < Duration::from_millis(1500), "{:?}", t.elapsed());
+        let gf = dl
+            .get("v", &s, Some(refetcher(Some(alt), None)), |_| {})
+            .await
+            .unwrap();
+        assert!(
+            t.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            t.elapsed()
+        );
         assert_eq!(finished(&dl, &gf, "v").await, *backup);
     }
 
@@ -1003,11 +1066,18 @@ mod tests {
     async fn fast_start_is_not_hedged() {
         let primary = data(300_000, 1);
         let backup = data(200_000, 2);
-        let base = cdn(vec![("/fast", Serve::Fast, primary.clone()), ("/other", Serve::Fast, backup.clone())]).await;
+        let base = cdn(vec![
+            ("/fast", Serve::Fast, primary.clone()),
+            ("/other", Serve::Fast, backup.clone()),
+        ])
+        .await;
         let dl = downloader("nohedge");
         let s = stream(format!("{base}/fast"), "WEB_REMIX", &primary, 60.0);
         let alt = stream(format!("{base}/other"), "VISIONOS", &backup, 60.0);
-        let gf = dl.get("v", &s, Some(refetcher(Some(alt), None)), |_| {}).await.unwrap();
+        let gf = dl
+            .get("v", &s, Some(refetcher(Some(alt), None)), |_| {})
+            .await
+            .unwrap();
         assert_eq!(finished(&dl, &gf, "v").await, *primary);
     }
 
@@ -1016,7 +1086,11 @@ mod tests {
         // 600 KB over 60 s needs 80 kbit/s; the trickle gives 10 KB/s.
         let file = data(600_000, 3);
         let base = cdn(vec![
-            ("/throttled", Serve::Throttle { fast: 100_000 }, file.clone()),
+            (
+                "/throttled",
+                Serve::Throttle { fast: 100_000 },
+                file.clone(),
+            ),
             ("/fresh", Serve::Fast, file.clone()),
         ])
         .await;
@@ -1024,7 +1098,10 @@ mod tests {
         let s = stream(format!("{base}/throttled"), "VISIONOS", &file, 60.0);
         let fresh = stream(format!("{base}/fresh"), "VISIONOS", &file, 60.0);
         let t = Instant::now();
-        let gf = dl.get("v", &s, Some(refetcher(None, Some(fresh))), |_| {}).await.unwrap();
+        let gf = dl
+            .get("v", &s, Some(refetcher(None, Some(fresh))), |_| {})
+            .await
+            .unwrap();
         // Byte-identical across the splice, and far sooner than the trickle's ~50 s.
         assert_eq!(finished(&dl, &gf, "v").await, *file);
         assert!(t.elapsed() < Duration::from_secs(8), "{:?}", t.elapsed());

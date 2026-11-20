@@ -1,0 +1,29 @@
+# Horizon-style version gate.
+# Every PR: top CHANGELOG.md entry == Cargo.toml [workspace.package] version == Cargo.lock.
+# PRs into `publish` (= release PRs) additionally: version not yet released and
+# newer than the latest GitHub Release.
+name: Validate Version
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Versions match (CHANGELOG.md, Cargo.toml, Cargo.lock)
+        run: scripts/version.sh check
+
+      - name: Version is new and newer than the latest release
+        if: github.base_ref == 'publish'
+        run: scripts/version.sh check-release

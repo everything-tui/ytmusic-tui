@@ -5,6 +5,7 @@ use std::fs;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Config {
     pub ui: UiConfig,
     pub playback: PlaybackConfig,
@@ -89,7 +90,10 @@ pub struct PlaybackConfig {
     pub eq_enabled: bool,
     /// Per-band gains in dB (10-band graphic EQ), clamped to ±12.
     /// Accepts shorter arrays from older configs (padded with 0).
-    #[serde(deserialize_with = "deserialize_eq_gains", default = "default_eq_gains")]
+    #[serde(
+        deserialize_with = "deserialize_eq_gains",
+        default = "default_eq_gains"
+    )]
     pub eq_gains: [f32; 10],
     /// Adaptive taste profile: "off" | "balanced" | "bass" | "vocal" | "bright".
     #[serde(default = "default_eq_adaptive")]
@@ -100,17 +104,6 @@ pub struct PlaybackConfig {
 #[serde(default)]
 pub struct KeyOverrides {
     // reserved for future key remapping via TOML
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            ui: UiConfig::default(),
-            playback: PlaybackConfig::default(),
-            keys: KeyOverrides::default(),
-            control: ControlConfig::default(),
-        }
-    }
 }
 
 impl Default for UiConfig {
@@ -224,15 +217,19 @@ mod tests {
 
     #[test]
     fn legacy_theme_values_migrate() {
-        let mut cfg: Config = toml::from_str("[ui]\ntheme = \"static\"\naccent = \"#FF0033\"\n").unwrap();
+        let mut cfg: Config =
+            toml::from_str("[ui]\ntheme = \"static\"\naccent = \"#FF0033\"\n").unwrap();
         cfg.ui.migrate_legacy_theme();
         assert_eq!(cfg.ui.theme, "midnight");
         assert!(!cfg.ui.dynamic_accent);
         assert!(cfg.ui.accent.is_empty());
 
-        let cfg: Config = toml::from_str("[ui]\ntheme = \"nord\"\n[ui.colors]\nbg = \"#000000\"\n").unwrap();
+        let cfg: Config =
+            toml::from_str("[ui]\ntheme = \"nord\"\n[ui.colors]\nbg = \"#000000\"\n").unwrap();
         assert_eq!(cfg.ui.colors.bg.as_deref(), Some("#000000"));
         assert!(cfg.ui.dynamic_accent);
-        assert!(toml::to_string_pretty(&cfg).unwrap().contains("bg = \"#000000\""));
+        assert!(toml::to_string_pretty(&cfg)
+            .unwrap()
+            .contains("bg = \"#000000\""));
     }
 }

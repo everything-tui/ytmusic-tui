@@ -73,7 +73,8 @@ fn inside(icon: Icon, p: P) -> bool {
             // Arrow head at the arc end (top, pointing right).
             let head = tri(p, (0.5, 0.2 - 0.12), (0.5, 0.2 + 0.12), (0.72, 0.2));
             let one = icon == Icon::RepeatOne
-                && (rect(p, 0.47, 0.38, 0.54, 0.64) || tri(p, (0.47, 0.38), (0.54, 0.38), (0.4, 0.46)));
+                && (rect(p, 0.47, 0.38, 0.54, 0.64)
+                    || tri(p, (0.47, 0.38), (0.54, 0.38), (0.4, 0.46)));
             ring || head || one
         }
         Icon::Heart => heart(p.0, p.1, 1.0),
@@ -99,7 +100,11 @@ pub fn render(icon: Icon, fg: (u8, u8, u8), bg: (u8, u8, u8)) -> DynamicImage {
             }
             let a = hits as f32 / (SS * SS) as f32;
             let mix = |f: u8, b: u8| (f as f32 * a + b as f32 * (1.0 - a)).round() as u8;
-            img.put_pixel(px, py, Rgb([mix(fg.0, bg.0), mix(fg.1, bg.1), mix(fg.2, bg.2)]));
+            img.put_pixel(
+                px,
+                py,
+                Rgb([mix(fg.0, bg.0), mix(fg.1, bg.1), mix(fg.2, bg.2)]),
+            );
         }
     }
     DynamicImage::ImageRgb8(img)

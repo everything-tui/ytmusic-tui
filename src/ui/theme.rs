@@ -202,7 +202,9 @@ pub fn display_name(name: &str) -> String {
     name.split('-')
         .map(|w| {
             let mut c = w.chars();
-            c.next().map(|f| f.to_uppercase().chain(c).collect::<String>()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                .unwrap_or_default()
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -328,9 +330,7 @@ impl Theme {
     }
 
     pub fn title(&self) -> Style {
-        Style::default()
-            .fg(self.text)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(self.text).add_modifier(Modifier::BOLD)
     }
 
     pub fn normal(&self) -> Style {
@@ -356,15 +356,11 @@ impl Theme {
     }
 
     pub fn heading(&self) -> Style {
-        Style::default()
-            .fg(self.text)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(self.text).add_modifier(Modifier::BOLD)
     }
 
     pub fn subheading(&self) -> Style {
-        Style::default()
-            .fg(self.dim)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(self.dim).add_modifier(Modifier::BOLD)
     }
 
     /// Full-row highlight for the cursor row; only sets the background.
@@ -497,10 +493,18 @@ fn rgb_to_256(r: u8, g: u8, b: u8) -> u8 {
     };
     let (ri, gi, bi) = (nearest(r), nearest(g), nearest(b));
     let cube = 16 + 36 * ri + 6 * gi + bi;
-    let cube_rgb = (LEVELS[ri as usize], LEVELS[gi as usize], LEVELS[bi as usize]);
+    let cube_rgb = (
+        LEVELS[ri as usize],
+        LEVELS[gi as usize],
+        LEVELS[bi as usize],
+    );
 
     let avg = (r as u16 + g as u16 + b as u16) / 3;
-    let gray_i = if avg < 8 { 0 } else { ((avg - 8) / 10).min(23) as u8 };
+    let gray_i = if avg < 8 {
+        0
+    } else {
+        ((avg - 8) / 10).min(23) as u8
+    };
     let gray_v = 8 + gray_i * 10;
 
     let dist = |(a, b2, c): (u8, u8, u8)| {
@@ -558,9 +562,11 @@ mod tests {
 
     #[test]
     fn config_overrides_apply_on_top_of_preset() {
-        let mut ui = UiConfig::default();
-        ui.theme = "nord".into();
-        ui.accent = "#00ff00".into();
+        let mut ui = UiConfig {
+            theme: "nord".into(),
+            accent: "#00ff00".into(),
+            ..Default::default()
+        };
         ui.colors.bg = Some("#101010".into());
         let t = Theme::from_config(&ui);
         assert_eq!(t.name, "nord");

@@ -61,8 +61,16 @@ pub fn section_header(buf: &mut Buffer, rect: Rect, title: &str, meta: &str, the
         return;
     }
     let meta_w = meta.width() as u16;
-    let title_w = rect.width.saturating_sub(if meta.is_empty() { 0 } else { meta_w + 2 });
-    buf.set_stringn(rect.x, rect.y, truncate(title, title_w as usize), title_w as usize, theme.heading());
+    let title_w = rect
+        .width
+        .saturating_sub(if meta.is_empty() { 0 } else { meta_w + 2 });
+    buf.set_stringn(
+        rect.x,
+        rect.y,
+        truncate(title, title_w as usize),
+        title_w as usize,
+        theme.heading(),
+    );
     if !meta.is_empty() && meta_w + 2 < rect.width {
         buf.set_string(rect.x + rect.width - meta_w, rect.y, meta, theme.muted());
     }
@@ -73,7 +81,12 @@ pub fn pill(buf: &mut Buffer, x: u16, y: u16, label: &str, active: bool, theme: 
     let text = format!(" {label} ");
     let w = text.width() as u16;
     buf.set_string(x, y, &text, theme.pill(active));
-    Rect { x, y, width: w, height: 1 }
+    Rect {
+        x,
+        y,
+        width: w,
+        height: 1,
+    }
 }
 
 /// Draws a row of pills separated by one space. Returns each pill's rect.
@@ -136,14 +149,25 @@ pub fn modal(
 }
 
 /// Vertically centered icon, title and hint for loading or empty screens.
-pub fn empty_state(buf: &mut Buffer, rect: Rect, icon: &str, title: &str, hint: &str, theme: &Theme) {
+pub fn empty_state(
+    buf: &mut Buffer,
+    rect: Rect,
+    icon: &str,
+    title: &str,
+    hint: &str,
+    theme: &Theme,
+) {
     if rect.height == 0 || rect.width == 0 {
         return;
     }
-    let lines: Vec<(&str, Style)> = [(icon, theme.accent_bold()), (title, theme.heading()), (hint, theme.dim())]
-        .into_iter()
-        .filter(|(s, _)| !s.is_empty())
-        .collect();
+    let lines: Vec<(&str, Style)> = [
+        (icon, theme.accent_bold()),
+        (title, theme.heading()),
+        (hint, theme.dim()),
+    ]
+    .into_iter()
+    .filter(|(s, _)| !s.is_empty())
+    .collect();
     let h = lines.len() as u16 + 1;
     let mut y = rect.y + rect.height.saturating_sub(h) / 2;
     for (i, (text, style)) in lines.iter().enumerate() {
@@ -163,7 +187,14 @@ pub fn empty_state(buf: &mut Buffer, rect: Rect, icon: &str, title: &str, hint: 
 }
 
 /// One-column scrollbar along the right edge of `rect`.
-pub fn scrollbar(buf: &mut Buffer, rect: Rect, total: usize, offset: usize, visible: usize, theme: &Theme) {
+pub fn scrollbar(
+    buf: &mut Buffer,
+    rect: Rect,
+    total: usize,
+    offset: usize,
+    visible: usize,
+    theme: &Theme,
+) {
     if total <= visible || rect.height == 0 || rect.width == 0 {
         return;
     }

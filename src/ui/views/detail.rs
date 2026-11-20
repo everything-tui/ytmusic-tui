@@ -29,7 +29,12 @@ pub fn render(
     let (label, title, meta, tracks): (&str, String, String, &[Track]) = match kind {
         DetailKind::Album(a) => {
             let n = a.tracks.len();
-            ("ALBUM", a.title.clone(), format!("{} · {n} songs", artist_line(a)), &a.tracks)
+            (
+                "ALBUM",
+                a.title.clone(),
+                format!("{} · {n} songs", artist_line(a)),
+                &a.tracks,
+            )
         }
         DetailKind::Artist(a) => (
             "ARTIST",
@@ -79,10 +84,20 @@ pub fn render(
 
     // Bottom-align the text block against the cover.
     let lines = 4u16;
-    let ty = hero.y + hero.height.saturating_sub(lines + 1).min(hero.height.saturating_sub(lines));
+    let ty = hero.y
+        + hero
+            .height
+            .saturating_sub(lines + 1)
+            .min(hero.height.saturating_sub(lines));
     if text_w >= 10 {
         buf.set_stringn(text_x, ty, label, text_w, theme.subheading());
-        buf.set_stringn(text_x, ty + 1, truncate(&title, text_w), text_w, theme.heading());
+        buf.set_stringn(
+            text_x,
+            ty + 1,
+            truncate(&title, text_w),
+            text_w,
+            theme.heading(),
+        );
         buf.set_stringn(text_x, ty + 2, truncate(&meta, text_w), text_w, theme.dim());
         if hero.height >= 5 {
             let mut x = text_x;

@@ -68,7 +68,13 @@ pub fn render(
         } else {
             tx + 3
         };
-        buf.set_stringn(px, ty, "What do you want to play?", max.saturating_sub(2), theme.muted().patch(bg));
+        buf.set_stringn(
+            px,
+            ty,
+            "What do you want to play?",
+            max.saturating_sub(2),
+            theme.muted().patch(bg),
+        );
     } else {
         // Keep the tail of long queries visible.
         let q: String = if data.query.width() + 1 > max {
@@ -107,8 +113,7 @@ pub fn render(
     let active = FILTERS.iter().position(|f| *f == data.filter);
     let filter_rects = pills(buf, row(area, 4), &labels, active, theme);
     for (i, r) in filter_rects.into_iter().enumerate() {
-        hit.buttons
-            .push((r, Action::SetSearchFilter(FILTERS[i])));
+        hit.buttons.push((r, Action::SetSearchFilter(FILTERS[i])));
     }
 
     let body = Rect {
@@ -140,12 +145,20 @@ pub fn render(
                 if y >= body.y + body.height {
                     break;
                 }
-                let r = Rect { y, height: 1, ..body };
+                let r = Rect {
+                    y,
+                    height: 1,
+                    ..body
+                };
                 hit.list_rows.push((r, i));
                 if i == cursor {
                     fill(buf, r, theme.row_selected());
                 }
-                let style = if i == cursor { theme.normal() } else { theme.dim() };
+                let style = if i == cursor {
+                    theme.normal()
+                } else {
+                    theme.dim()
+                };
                 buf.set_stringn(
                     r.x + 1,
                     y,
@@ -154,18 +167,40 @@ pub fn render(
                         g => format!("{g}  {}", truncate(s, r.width.saturating_sub(5) as usize)),
                     },
                     r.width as usize,
-                    style.patch(if i == cursor { theme.row_selected() } else { Style::default() }),
+                    style.patch(if i == cursor {
+                        theme.row_selected()
+                    } else {
+                        Style::default()
+                    }),
                 );
             }
         } else if data.query.is_empty() {
-            empty_state(buf, body, glyph(theme, Glyph::Search), "Search YouTube Music", "Songs, albums, artists and playlists", theme);
+            empty_state(
+                buf,
+                body,
+                glyph(theme, Glyph::Search),
+                "Search YouTube Music",
+                "Songs, albums, artists and playlists",
+                theme,
+            );
         } else {
-            empty_state(buf, body, "", "No results", "Try a different spelling or filter", theme);
+            empty_state(
+                buf,
+                body,
+                "",
+                "No results",
+                "Try a different spelling or filter",
+                theme,
+            );
         }
         return;
     }
 
-    let meta = if count == 1 { "1 result".to_string() } else { format!("{count} results") };
+    let meta = if count == 1 {
+        "1 result".to_string()
+    } else {
+        format!("{count} results")
+    };
     section_header(buf, row(body, 0), data.filter.label(), &meta, theme);
     let list_area = Rect {
         y: body.y + 2,

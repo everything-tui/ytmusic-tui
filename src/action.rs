@@ -57,7 +57,10 @@ pub enum Action {
     /// Mouse: activate list row `index` (select + play/open).
     SelectAt(usize),
     /// Mouse: activate a Home shelf card.
-    SelectHomeItem { shelf: usize, item: usize },
+    SelectHomeItem {
+        shelf: usize,
+        item: usize,
+    },
 
     // Lists
     MoveUp,
@@ -104,9 +107,17 @@ pub enum Action {
     CreatePlaylist(String),
 
     // Mouse / overlays
-    Click { col: u16, row: u16 },
-    Scroll { delta: i16 },
-    RightClick { col: u16, row: u16 },
+    Click {
+        col: u16,
+        row: u16,
+    },
+    Scroll {
+        delta: i16,
+    },
+    RightClick {
+        col: u16,
+        row: u16,
+    },
     ToastDismiss,
 
     // Lyrics
@@ -134,9 +145,14 @@ pub enum Command {
     PlayerSeek(Duration),
     PlayerSetVolume(f32),
     PlayerStop,
-    Search { query: String, filter: SearchFilter },
+    Search {
+        query: String,
+        filter: SearchFilter,
+    },
     SearchSuggestions(String),
-    LoadHome { gen: u64 },
+    LoadHome {
+        gen: u64,
+    },
     LoadAlbum(String),
     LoadArtist(String),
     LoadPlaylist(String),
@@ -146,11 +162,26 @@ pub enum Command {
     LoadLibraryArtists,
     LoadHistory,
     LoadRadio(String),
-    LoadLyrics { video_id: String, browse_id: Option<String>, track: Track },
-    Rate { video_id: String, liked: bool },
-    AddToPlaylist { playlist_id: String, video_ids: Vec<String> },
-    CreatePlaylist { title: String },
-    FetchArt { url: String, video_id: String },
+    LoadLyrics {
+        video_id: String,
+        browse_id: Option<String>,
+        track: Track,
+    },
+    Rate {
+        video_id: String,
+        liked: bool,
+    },
+    AddToPlaylist {
+        playlist_id: String,
+        video_ids: Vec<String>,
+    },
+    CreatePlaylist {
+        title: String,
+    },
+    FetchArt {
+        url: String,
+        video_id: String,
+    },
     /// UI → main: validate & persist a pasted cookie / cURL.
     ValidateCookies {
         cookies: String,
@@ -208,7 +239,10 @@ pub enum AppEvent {
         playlists: Vec<Playlist>,
     },
     SearchSuggestions(Vec<String>),
-    Home { shelves: Vec<Shelf>, gen: u64 },
+    Home {
+        shelves: Vec<Shelf>,
+        gen: u64,
+    },
     AlbumLoaded(Album),
     ArtistLoaded(Artist),
     PlaylistLoaded(Playlist),
@@ -217,8 +251,14 @@ pub enum AppEvent {
     LibraryAlbums(Vec<Album>),
     LibraryArtists(Vec<Artist>),
     History(Vec<Track>),
-    RadioTracks { seed: String, tracks: Vec<Track> },
-    LyricsLoaded { video_id: String, lyrics: Lyrics },
+    RadioTracks {
+        seed: String,
+        tracks: Vec<Track>,
+    },
+    LyricsLoaded {
+        video_id: String,
+        lyrics: Lyrics,
+    },
     ArtLoaded {
         video_id: String,
         path: std::path::PathBuf,
@@ -226,10 +266,16 @@ pub enum AppEvent {
         pixels: Option<std::sync::Arc<crate::art::ArtPixels>>,
         image: Option<std::sync::Arc<image::DynamicImage>>,
     },
-    RateDone { video_id: String, liked: bool },
+    RateDone {
+        video_id: String,
+        liked: bool,
+    },
     PlaylistCreated(Playlist),
     AddedToPlaylist,
-    QueueSnapshot { tracks: Vec<Track>, cursor: usize },
+    QueueSnapshot {
+        tracks: Vec<Track>,
+        cursor: usize,
+    },
     Error(String),
     Info(String),
     Player(PlayerEvent),
@@ -238,7 +284,9 @@ pub enum AppEvent {
 #[derive(Debug, Clone)]
 pub enum AuthStateEvent {
     Guest,
-    WaitingForBrowser { browsers: Vec<String> },
+    WaitingForBrowser {
+        browsers: Vec<String>,
+    },
     /// Live status while polling browsers (shown on onboarding screen).
     Progress(String),
     SignedIn(AuthSession),
@@ -250,8 +298,12 @@ pub enum AuthStateEvent {
 
 #[derive(Debug, Clone)]
 pub enum PlayerEvent {
-    Loading { track: Track },
-    Playing { track: Track },
+    Loading {
+        track: Track,
+    },
+    Playing {
+        track: Track,
+    },
     Paused,
     Resumed,
     Stopped,
@@ -261,9 +313,15 @@ pub enum PlayerEvent {
     Buffering(bool),
     Ended,
     Error(String),
-    DownloadProgress { video_id: String, pct: f32 },
+    DownloadProgress {
+        video_id: String,
+        pct: f32,
+    },
     /// Codec/size of the stream just opened for `video_id`.
-    Stream { video_id: String, info: crate::player::source::StreamInfo },
+    Stream {
+        video_id: String,
+        info: crate::player::source::StreamInfo,
+    },
     /// What the resolver learned about the account's Music Premium status.
     Premium(crate::player::resolver::Premium),
 }

@@ -192,7 +192,10 @@ mod tests {
 
     #[test]
     fn merge_updates_cookie_jar() {
-        let merged = merge_cookie_header("A=1; B=2", &[("B".into(), "9".into()), ("C".into(), "3".into())]);
+        let merged = merge_cookie_header(
+            "A=1; B=2",
+            &[("B".into(), "9".into()), ("C".into(), "3".into())],
+        );
         let map = cookie_map(&merged);
         assert_eq!(map.get("A").map(String::as_str), Some("1"));
         assert_eq!(map.get("B").map(String::as_str), Some("9"));

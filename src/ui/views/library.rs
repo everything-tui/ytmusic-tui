@@ -1,24 +1,18 @@
+use crate::api::model::ShelfItem;
 use crate::api::model::{Album, Artist, Playlist, Track};
+use crate::art::Cover;
 use crate::ui::components::{empty_state, pills, row, section_header};
+use crate::ui::cover::{CoverRenderer, CoverSlot};
 use crate::ui::glyphs::{glyph, Glyph};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::track_list::{
     render_item_list, render_track_list, TrackListOpts, TrackListState,
 };
-use crate::art::Cover;
-use crate::api::model::ShelfItem;
-use crate::ui::cover::{CoverRenderer, CoverSlot};
 use crate::ui::HitMap;
 use ratatui::prelude::*;
 use std::collections::HashMap;
 
-pub const SECTIONS: &[&str] = &[
-    "Liked songs",
-    "Playlists",
-    "Albums",
-    "Artists",
-    "History",
-];
+pub const SECTIONS: &[&str] = &["Liked songs", "Playlists", "Albums", "Artists", "History"];
 
 pub struct LibraryData<'a> {
     pub signed_in: bool,
@@ -79,7 +73,8 @@ pub fn render(
     if section_pills {
         let rects = pills(buf, row(area, y), SECTIONS, Some(section), theme);
         for (i, r) in rects.into_iter().enumerate() {
-            hit.buttons.push((r, crate::action::Action::LibrarySection(i)));
+            hit.buttons
+                .push((r, crate::action::Action::LibrarySection(i)));
         }
         y += 2;
     }
@@ -225,7 +220,12 @@ fn render_playlist_grid(
 
     let sel_row = selected / cols;
     let first_row = sel_row.saturating_sub(rows_fit - 1);
-    for (ri, chunk) in playlists.chunks(cols).enumerate().skip(first_row).take(rows_fit) {
+    for (ri, chunk) in playlists
+        .chunks(cols)
+        .enumerate()
+        .skip(first_row)
+        .take(rows_fit)
+    {
         let y = area.y + (ri - first_row) as u16 * row_h;
         let h = card_h.min((area.y + area.height).saturating_sub(y));
         if h < 2 {

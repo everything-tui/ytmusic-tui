@@ -222,9 +222,7 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
         while let Some(cmd) = player_cmd_rx.recv().await {
             match cmd {
                 PlayerCommand::PlayTrack(t) => player.play_track(t),
-                PlayerCommand::PlayTracks { tracks, start } => {
-                    player.play_tracks(tracks, start)
-                }
+                PlayerCommand::PlayTracks { tracks, start } => player.play_tracks(tracks, start),
                 PlayerCommand::Toggle => player.toggle(),
                 PlayerCommand::Play => player.resume(),
                 PlayerCommand::Pause => player.engine.send(player::engine::EngineCmd::Pause),
@@ -301,19 +299,14 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
                     let api = api_cmd_tx2.clone();
                     tokio::spawn(async move {
                         match auth::validate_and_save_with_visitor(
-                            paths,
-                            cookies,
-                            None,
-                            None,
-                            visitor_id,
+                            paths, cookies, None, None, visitor_id,
                         )
                         .await
                         {
                             Ok(session) => {
                                 let _ = api.send(Command::ApplyAuth(session.clone()));
-                                let _ = tx.send(AppEvent::AuthState(AuthStateEvent::SignedIn(
-                                    session,
-                                )));
+                                let _ =
+                                    tx.send(AppEvent::AuthState(AuthStateEvent::SignedIn(session)));
                             }
                             Err(e) => {
                                 let _ = tx.send(AppEvent::AuthState(AuthStateEvent::Failed(
@@ -395,14 +388,18 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
                     match auth::recover_session(paths_v.clone()).await {
                         auth::Recovery::Refreshed(session) => {
                             let _ = api_v.send(Command::ApplyAuth(session.clone()));
-                            let _ = tx_v.send(AppEvent::AuthState(AuthStateEvent::SignedIn(session)));
+                            let _ =
+                                tx_v.send(AppEvent::AuthState(AuthStateEvent::SignedIn(session)));
                         }
                         // Offline / YouTube hiccup: keep the saved session, never prompt.
                         auth::Recovery::Transient(why) => {
-                            tracing::warn!("launch session check failed ({e}); keeping session: {why}");
+                            tracing::warn!(
+                                "launch session check failed ({e}); keeping session: {why}"
+                            );
                         }
                         auth::Recovery::Rejected(why) => {
-                            let _ = tx_v.send(AppEvent::AuthState(AuthStateEvent::SessionExpired(why)));
+                            let _ =
+                                tx_v.send(AppEvent::AuthState(AuthStateEvent::SessionExpired(why)));
                         }
                     }
                 }
@@ -453,7 +450,15 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
         });
 
     // Dropping the app drops its ControlHandle, which removes the endpoint file.
-    let result = run_ui(app, event_rx, cmd_tx, media, sample_provider, Some(control_rx)).await;
+    let result = run_ui(
+        app,
+        event_rx,
+        cmd_tx,
+        media,
+        sample_provider,
+        Some(control_rx),
+    )
+    .await;
 
     let _ = player_cmd_tx.send(PlayerCommand::Shutdown);
     let _ = player_handle.await;

@@ -21,7 +21,9 @@ fn groups() -> Vec<Vec<HelpLine>> {
         .skip(1)
         .map(|block| {
             let mut lines = block.lines();
-            let mut out = vec![HelpLine::Heading(lines.next().unwrap_or("").trim().to_string())];
+            let mut out = vec![HelpLine::Heading(
+                lines.next().unwrap_or("").trim().to_string(),
+            )];
             for l in lines {
                 let l = l.trim();
                 let (k, d) = match l.find("  ") {
@@ -41,7 +43,15 @@ impl<'a> Widget for HelpOverlay<'a> {
         let theme = self.theme;
         let width = (area.width.saturating_mul(85) / 100).min(110);
         let height = area.height.saturating_mul(85) / 100;
-        let inner = modal(buf, area, width, height, "Keyboard shortcuts", "esc to close", theme);
+        let inner = modal(
+            buf,
+            area,
+            width,
+            height,
+            "Keyboard shortcuts",
+            "esc to close",
+            theme,
+        );
         if inner.height == 0 {
             return;
         }
@@ -64,7 +74,11 @@ impl<'a> Widget for HelpOverlay<'a> {
             vec![groups.into_iter().flatten().collect()]
         };
 
-        let col_w = if two_cols { (inner.width - 4) / 2 } else { inner.width };
+        let col_w = if two_cols {
+            (inner.width - 4) / 2
+        } else {
+            inner.width
+        };
         let bg = Style::default().bg(theme.bg_modal);
         for (ci, lines) in cols.iter().enumerate() {
             let x = inner.x + ci as u16 * (col_w + 4);
@@ -75,11 +89,23 @@ impl<'a> Widget for HelpOverlay<'a> {
                 let y = inner.y + i as u16;
                 match line {
                     HelpLine::Heading(h) => {
-                        buf.set_stringn(x, y, h.to_uppercase(), col_w as usize, theme.subheading().patch(bg));
+                        buf.set_stringn(
+                            x,
+                            y,
+                            h.to_uppercase(),
+                            col_w as usize,
+                            theme.subheading().patch(bg),
+                        );
                     }
                     HelpLine::Entry(k, d) => {
                         let kw = 16.min(col_w / 2);
-                        buf.set_stringn(x, y, truncate(k, kw as usize), kw as usize, theme.accent().patch(bg));
+                        buf.set_stringn(
+                            x,
+                            y,
+                            truncate(k, kw as usize),
+                            kw as usize,
+                            theme.accent().patch(bg),
+                        );
                         buf.set_stringn(
                             x + kw + 1,
                             y,

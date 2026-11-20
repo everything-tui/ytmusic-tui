@@ -19,7 +19,14 @@ pub fn render(
         return;
     }
     let Some(lyrics) = lyrics else {
-        empty_state(buf, area, glyph(theme, Glyph::Lyrics), "No lyrics yet", "Lyrics show up here for the playing track", theme);
+        empty_state(
+            buf,
+            area,
+            glyph(theme, Glyph::Lyrics),
+            "No lyrics yet",
+            "Lyrics show up here for the playing track",
+            theme,
+        );
         return;
     };
 
@@ -31,8 +38,8 @@ pub fn render(
         let cur = current_line_index(synced, position).unwrap_or(0);
         let half = (body.height as usize / 2).max(1);
         let start = cur.saturating_sub(half);
-        let mut y = body.y + half.saturating_sub(cur - start) as u16;
-        for (i, line) in synced.iter().enumerate().skip(start) {
+        let y0 = body.y + half.saturating_sub(cur - start) as u16;
+        for (y, (i, line)) in (y0..).zip(synced.iter().enumerate().skip(start)) {
             if y >= body.y + body.height {
                 break;
             }
@@ -49,7 +56,6 @@ pub fn render(
             };
             let x_off = body.width.saturating_sub(text.width() as u16) / 2;
             buf.set_string(body.x + x_off, y, &text, style);
-            y += 1;
         }
     } else if let Some(ref plain) = lyrics.plain {
         Paragraph::new(plain.as_str())
@@ -58,7 +64,14 @@ pub fn render(
             .wrap(Wrap { trim: true })
             .render(body, buf);
     } else {
-        empty_state(buf, area, glyph(theme, Glyph::Lyrics), "Lyrics not available", "", theme);
+        empty_state(
+            buf,
+            area,
+            glyph(theme, Glyph::Lyrics),
+            "Lyrics not available",
+            "",
+            theme,
+        );
         return;
     }
 

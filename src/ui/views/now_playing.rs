@@ -87,8 +87,20 @@ impl<'a> FullscreenNowPlaying<'a> {
             buf.set_stringn(info.x, info.y, &label, w, theme.subheading());
             match self.track {
                 Some(t) => {
-                    buf.set_stringn(info.x, info.y + 2, truncate(&t.title, w), w, theme.heading());
-                    buf.set_stringn(info.x, info.y + 3, truncate(&t.artist_names(), w), w, theme.accent());
+                    buf.set_stringn(
+                        info.x,
+                        info.y + 2,
+                        truncate(&t.title, w),
+                        w,
+                        theme.heading(),
+                    );
+                    buf.set_stringn(
+                        info.x,
+                        info.y + 3,
+                        truncate(&t.artist_names(), w),
+                        w,
+                        theme.accent(),
+                    );
                     if let Some(a) = &t.album {
                         buf.set_stringn(info.x, info.y + 4, truncate(&a.name, w), w, theme.dim());
                     }
@@ -114,7 +126,14 @@ impl<'a> FullscreenNowPlaying<'a> {
             .duration
             .or(self.track.and_then(|t| t.duration))
             .unwrap_or_default();
-        hit.progress = Some(render_progress(buf, rows[4], self.position, dur, self.state, theme));
+        hit.progress = Some(render_progress(
+            buf,
+            rows[4],
+            self.position,
+            dur,
+            self.state,
+            theme,
+        ));
         hit.duration = dur;
 
         let ctrl_row = rows[6];
@@ -124,7 +143,8 @@ impl<'a> FullscreenNowPlaying<'a> {
             repeat: self.repeat,
             liked: self.liked,
         };
-        hit.buttons.extend(render_controls(buf, ctrl_row, &c, theme, Some(&self.cover)));
+        hit.buttons
+            .extend(render_controls(buf, ctrl_row, &c, theme, Some(&self.cover)));
         if ctrl_row.width >= 80 {
             let vol = Rect {
                 x: ctrl_row.x + ctrl_row.width - 24,

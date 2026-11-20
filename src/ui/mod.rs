@@ -307,13 +307,25 @@ fn draw_main(
 fn draw_confirm_quit(area: Rect, buf: &mut Buffer, theme: &Theme) {
     let inner = modal(buf, area, 44, 8, "Quit yt-tui?", "", theme);
     let bg = Style::default().bg(theme.bg_modal);
-    buf.set_stringn(inner.x, inner.y, "Playback will stop.", inner.width as usize, theme.dim().patch(bg));
+    buf.set_stringn(
+        inner.x,
+        inner.y,
+        "Playback will stop.",
+        inner.width as usize,
+        theme.dim().patch(bg),
+    );
     let y = inner.y + 2;
     let r = pill(buf, inner.x, y, "y  Quit", true, theme);
     pill(buf, r.x + r.width + 2, y, "n  Cancel", false, theme);
 }
 
-fn draw_context_menu(area: Rect, buf: &mut Buffer, theme: &Theme, items: &[String], selected: usize) {
+fn draw_context_menu(
+    area: Rect,
+    buf: &mut Buffer,
+    theme: &Theme,
+    items: &[String],
+    selected: usize,
+) {
     let height = (items.len() as u16 + 5).min(area.height.saturating_sub(4));
     let width = 40.min(area.width.saturating_sub(4));
     let inner = modal(buf, area, width, height, "Actions", "esc", theme);
@@ -347,7 +359,15 @@ fn draw_command_palette(
 ) {
     let height = 18.min(area.height.saturating_sub(4));
     let width = 64.min(area.width.saturating_sub(4));
-    let inner = modal(buf, area, width, height, "Command palette", "↑↓ · enter · esc", theme);
+    let inner = modal(
+        buf,
+        area,
+        width,
+        height,
+        "Command palette",
+        "↑↓ · enter · esc",
+        theme,
+    );
     if inner.height < 3 {
         return;
     }
@@ -378,7 +398,12 @@ fn draw_command_palette(
         ..inner
     };
     if actions.is_empty() {
-        buf.set_string(list.x, list.y, "No matching commands", theme.muted().patch(bg));
+        buf.set_string(
+            list.x,
+            list.y,
+            "No matching commands",
+            theme.muted().patch(bg),
+        );
         return;
     }
     let visible = list.height as usize;
@@ -435,10 +460,22 @@ fn draw_manual_cookie(area: Rect, buf: &mut Buffer, theme: &Theme, input: &str) 
     ];
     for (i, s) in steps.iter().enumerate() {
         let style = if i == 0 { theme.normal() } else { theme.dim() };
-        buf.set_stringn(inner.x, inner.y + i as u16, s, inner.width as usize, style.patch(bg));
+        buf.set_stringn(
+            inner.x,
+            inner.y + i as u16,
+            s,
+            inner.width as usize,
+            style.patch(bg),
+        );
     }
     let y = inner.y + steps.len() as u16 + 1;
-    buf.set_stringn(inner.x, y, &status, inner.width as usize, status_style.patch(bg));
+    buf.set_stringn(
+        inner.x,
+        y,
+        &status,
+        inner.width as usize,
+        status_style.patch(bg),
+    );
     let field = Rect {
         x: inner.x.saturating_sub(1),
         width: inner.width + 2,
@@ -513,7 +550,13 @@ fn draw_account_menu(area: Rect, buf: &mut Buffer, theme: &Theme, app: &App) {
             break;
         }
         pill(buf, inner.x, y, &format!("{key:^5}"), i == 0, theme);
-        buf.set_stringn(inner.x + 9, y, label, inner.width.saturating_sub(9) as usize, theme.normal().patch(bg));
+        buf.set_stringn(
+            inner.x + 9,
+            y,
+            label,
+            inner.width.saturating_sub(9) as usize,
+            theme.normal().patch(bg),
+        );
     }
 }
 
@@ -530,8 +573,14 @@ mod tests {
         Track {
             video_id: format!("v{i}"),
             title: format!("Song number {i}"),
-            artists: vec![ArtistRef { id: None, name: format!("Artist {i}") }],
-            album: Some(AlbumRef { id: None, name: format!("Album {i}") }),
+            artists: vec![ArtistRef {
+                id: None,
+                name: format!("Artist {i}"),
+            }],
+            album: Some(AlbumRef {
+                id: None,
+                name: format!("Album {i}"),
+            }),
             duration: Some(Duration::from_secs(180 + i as u64)),
             thumbnails: vec![],
             explicit: i.is_multiple_of(3),
@@ -603,7 +652,10 @@ mod tests {
         let mut app = test_app();
         // Unknown yet: no tier claimed in the sidebar.
         let out = render(&app, 120, 36);
-        assert!(out.contains("Tester") && !out.contains("Premium") && !out.contains("Free"), "{out}");
+        assert!(
+            out.contains("Tester") && !out.contains("Premium") && !out.contains("Free"),
+            "{out}"
+        );
 
         for (premium, sidebar, menu) in [
             (Premium::Yes, "Premium", "Music Premium · 256 kbps audio"),
@@ -622,7 +674,13 @@ mod tests {
     #[test]
     fn frame_layouts_are_borderless_and_responsive() {
         let mut app = test_app();
-        for tab in [Tab::Home, Tab::Search, Tab::Library, Tab::Queue, Tab::Lyrics] {
+        for tab in [
+            Tab::Home,
+            Tab::Search,
+            Tab::Library,
+            Tab::Queue,
+            Tab::Lyrics,
+        ] {
             app.tab = tab;
             for (w, h) in [(140u16, 40u16), (90, 30), (60, 20)] {
                 let out = render(&app, w, h);
@@ -631,7 +689,13 @@ mod tests {
                 assert_borderless(&out, &ctx);
                 let hit = app.hit.borrow();
                 assert_eq!(hit.tabs.len(), 5, "sidebar nav missing in {ctx}");
-                assert_eq!(hit.buttons.iter().filter(|(_, a)| matches!(a, Action::PlayPause)).count(), 1);
+                assert_eq!(
+                    hit.buttons
+                        .iter()
+                        .filter(|(_, a)| matches!(a, Action::PlayPause))
+                        .count(),
+                    1
+                );
                 // Full sidebar (with labels) only from 80 columns.
                 assert_eq!(out.contains("yt-tui"), w >= 80, "{ctx}");
             }
@@ -684,21 +748,27 @@ mod tests {
             thumbnails: vec![],
             tracks: vec![track(0)],
         }));
-        app.nav_stack.push(DetailView::Album(crate::api::model::Album {
-            id: "alb".into(),
-            title: "Previous".into(),
-            artists: vec![],
-            year: None,
-            thumbnails: vec![],
-            tracks: vec![],
-        }));
+        app.nav_stack
+            .push(DetailView::Album(crate::api::model::Album {
+                id: "alb".into(),
+                title: "Previous".into(),
+                artists: vec![],
+                year: None,
+                thumbnails: vec![],
+                tracks: vec![],
+            }));
         let cmds = app.update(Action::LibrarySection(1));
-        assert!(app.detail.is_none(), "detail should close so the list is visible");
+        assert!(
+            app.detail.is_none(),
+            "detail should close so the list is visible"
+        );
         assert!(app.nav_stack.is_empty());
         assert_eq!(app.tab, Tab::Library);
         assert_eq!(app.library_section, 1);
         assert!(app.loading_library);
-        assert!(cmds.iter().any(|c| matches!(c, crate::action::Command::LoadLibraryPlaylists)));
+        assert!(cmds
+            .iter()
+            .any(|c| matches!(c, crate::action::Command::LoadLibraryPlaylists)));
     }
 
     #[test]
@@ -723,7 +793,10 @@ mod tests {
         app.update(Action::PageUp);
         assert_eq!(app.list_state.selected, 14);
         let out = render(&app, 120, 36);
-        assert!(out.contains("Song number 14"), "selection stays on screen:\n{out}");
+        assert!(
+            out.contains("Song number 14"),
+            "selection stays on screen:\n{out}"
+        );
     }
 
     #[test]
@@ -732,13 +805,19 @@ mod tests {
         app.detail = Some(DetailView::Album(crate::api::model::Album {
             id: "alb".into(),
             title: "Great Album".into(),
-            artists: vec![ArtistRef { id: None, name: "Band".into() }],
+            artists: vec![ArtistRef {
+                id: None,
+                name: "Band".into(),
+            }],
             year: Some("2020".into()),
             thumbnails: vec![],
             tracks: (0..12).map(track).collect(),
         }));
         let out = render(&app, 120, 36);
-        assert!(out.contains("ALBUM") && out.contains("Great Album"), "{out}");
+        assert!(
+            out.contains("ALBUM") && out.contains("Great Album"),
+            "{out}"
+        );
         assert!(app
             .hit
             .borrow()
@@ -750,8 +829,13 @@ mod tests {
             Overlay::Help { scroll: 0 },
             Overlay::ConfirmQuit,
             Overlay::AccountMenu,
-            Overlay::CommandPalette { query: "pl".into(), selected: 0 },
-            Overlay::ManualCookie { input: "Cookie: a=b".into() },
+            Overlay::CommandPalette {
+                query: "pl".into(),
+                selected: 0,
+            },
+            Overlay::ManualCookie {
+                input: "Cookie: a=b".into(),
+            },
             Overlay::Equalizer { selected: 0 },
         ] {
             app.overlay = overlay;

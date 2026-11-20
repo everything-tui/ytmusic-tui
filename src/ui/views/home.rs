@@ -72,7 +72,11 @@ pub fn render(
         };
         section_header(
             buf,
-            Rect { y, height: 1, ..area },
+            Rect {
+                y,
+                height: 1,
+                ..area
+            },
             &shelf.title,
             &meta,
             theme,
@@ -167,7 +171,12 @@ pub(crate) fn render_card(
             };
             let gx = art.x + art.width.saturating_sub(mark.width() as u16) / 2;
             let gy = art.y + art.height / 2;
-            buf.set_string(gx, gy, &mark, theme.dim().bg(tint).add_modifier(Modifier::BOLD));
+            buf.set_string(
+                gx,
+                gy,
+                &mark,
+                theme.dim().bg(tint).add_modifier(Modifier::BOLD),
+            );
         }
     }
     let ty = art.y + art.height;
@@ -177,24 +186,46 @@ pub(crate) fn render_card(
         Style::default()
     };
     if ty < r.y + r.height {
-        let style = if selected { theme.heading() } else { theme.normal() };
-        buf.set_stringn(r.x, ty, truncate(&title, r.width as usize), r.width as usize, style.patch(bg));
+        let style = if selected {
+            theme.heading()
+        } else {
+            theme.normal()
+        };
+        buf.set_stringn(
+            r.x,
+            ty,
+            truncate(&title, r.width as usize),
+            r.width as usize,
+            style.patch(bg),
+        );
     }
     if ty + 1 < r.y + r.height {
-        buf.set_stringn(r.x, ty + 1, truncate(&sub, r.width as usize), r.width as usize, theme.dim().patch(bg));
+        buf.set_stringn(
+            r.x,
+            ty + 1,
+            truncate(&sub, r.width as usize),
+            r.width as usize,
+            theme.dim().patch(bg),
+        );
     }
 }
 
 /// Deterministic muted tint per item so cards are distinguishable without artwork.
 fn tint_for(s: &str, theme: &Theme) -> Color {
-    let h = s.bytes().fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
+    let h = s
+        .bytes()
+        .fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
     let hue = (h % 360) as f32 / 360.0;
     let (r, g, b) = hsl(hue, 0.35, if theme.light { 0.86 } else { 0.22 });
     theme.color(r, g, b)
 }
 
 fn hsl(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
-    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
     let p = 2.0 * l - q;
     let f = |mut t: f32| {
         if t < 0.0 {
@@ -229,7 +260,11 @@ fn item_labels(item: &ShelfItem) -> (String, String, Glyph) {
                 .join(", "),
             Glyph::Album,
         ),
-        ShelfItem::Playlist(p) => (p.title.clone(), p.author.clone().unwrap_or_default(), Glyph::Playlist),
+        ShelfItem::Playlist(p) => (
+            p.title.clone(),
+            p.author.clone().unwrap_or_default(),
+            Glyph::Playlist,
+        ),
         ShelfItem::Artist(a) => (a.name.clone(), "Artist".into(), Glyph::Artist),
     }
 }

@@ -77,18 +77,16 @@ impl Track {
     /// Best available art URL, with a YouTube CDN fallback when Innertube
     /// omitted thumbnails (common on some playlist/radio rows).
     pub fn art_url(&self) -> Option<String> {
-        self.best_thumbnail()
-            .map(|t| t.url.clone())
-            .or_else(|| {
-                if self.video_id.is_empty() {
-                    None
-                } else {
-                    Some(format!(
-                        "https://i.ytimg.com/vi/{}/hqdefault.jpg",
-                        self.video_id
-                    ))
-                }
-            })
+        self.best_thumbnail().map(|t| t.url.clone()).or_else(|| {
+            if self.video_id.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "https://i.ytimg.com/vi/{}/hqdefault.jpg",
+                    self.video_id
+                ))
+            }
+        })
     }
 
     pub fn duration_label(&self) -> String {

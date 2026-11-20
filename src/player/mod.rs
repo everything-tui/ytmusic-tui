@@ -93,7 +93,10 @@ impl PlayerService {
         tokio::spawn(async move {
             while premium.changed().await.is_ok() {
                 let status = *premium.borrow_and_update();
-                if premium_tx.send(AppEvent::Player(PlayerEvent::Premium(status))).is_err() {
+                if premium_tx
+                    .send(AppEvent::Player(PlayerEvent::Premium(status)))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -170,7 +173,12 @@ impl PlayerService {
     /// The user is lingering on `track` in a list: resolve it and fetch its first
     /// bytes so pressing play starts at once. Only the latest highlight counts.
     pub fn prewarm_track(&self, track: &Track) {
-        if !self.prewarm || self.current.as_ref().is_some_and(|t| t.video_id == track.video_id) {
+        if !self.prewarm
+            || self
+                .current
+                .as_ref()
+                .is_some_and(|t| t.video_id == track.video_id)
+        {
             return;
         }
         let epoch = self.prewarm_epoch.fetch_add(1, Ordering::SeqCst) + 1;
@@ -316,7 +324,12 @@ impl PlayerService {
             if let (false, Some(kbps)) = (need_resolve, cached_kbps) {
                 if !info.is_high(track.duration) {
                     let perceived = crate::player::source::perceived_kbps(info.codec, kbps);
-                    upgrade_cached(video_id.clone(), perceived, resolver.clone(), downloader.clone());
+                    upgrade_cached(
+                        video_id.clone(),
+                        perceived,
+                        resolver.clone(),
+                        downloader.clone(),
+                    );
                 }
             }
             let _ = event_tx.send(AppEvent::Player(PlayerEvent::Stream {
@@ -547,12 +560,17 @@ async fn resolve_download(
         let tx = event_tx.clone();
         let vid = video_id.to_string();
         downloader
-            .get(video_id, stream, Some(refetcher(resolver, video_id)), move |pct| {
-                let _ = tx.send(AppEvent::Player(PlayerEvent::DownloadProgress {
-                    video_id: vid.clone(),
-                    pct,
-                }));
-            })
+            .get(
+                video_id,
+                stream,
+                Some(refetcher(resolver, video_id)),
+                move |pct| {
+                    let _ = tx.send(AppEvent::Player(PlayerEvent::DownloadProgress {
+                        video_id: vid.clone(),
+                        pct,
+                    }));
+                },
+            )
             .await
     }
 
@@ -777,7 +795,11 @@ fn upgrade_cached(video_id: String, cached_kbps: u32, resolver: Resolver, downlo
         let outcome = match resolver.best_stream(&video_id).await {
             Ok(Some(stream)) => {
                 let better = stream.quality().map(|(codec, kbps)| {
-                    (codec, kbps, crate::player::source::perceived_kbps(codec, kbps))
+                    (
+                        codec,
+                        kbps,
+                        crate::player::source::perceived_kbps(codec, kbps),
+                    )
                 });
                 match better {
                     // At least ~15% better, so VBR noise never re-downloads a file.
@@ -827,11 +849,14 @@ fn refetcher_inner(resolver: &Resolver, video_id: &str, hedge: bool) -> Refetche
         Box::pin(async move {
             match want {
                 Refetch::Alternate { .. } if !hedge => None,
-                Refetch::Alternate { exclude_client } => {
-                    resolver.resolve_alternate(&video_id, &exclude_client).await.ok()
-                }
+                Refetch::Alternate { exclude_client } => resolver
+                    .resolve_alternate(&video_id, &exclude_client)
+                    .await
+                    .ok(),
                 Refetch::SameFile { client, filesize } => {
-                    resolver.resolve_same_file(&video_id, &client, filesize).await
+                    resolver
+                        .resolve_same_file(&video_id, &client, filesize)
+                        .await
                 }
             }
         })

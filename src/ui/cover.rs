@@ -43,8 +43,16 @@ struct Cached {
 
 enum Job {
     /// Build the protocol from scratch: hashing and compositing the source is itself costly.
-    Create { key: CacheKey, image: Arc<DynamicImage>, area: Rect },
-    Resize { key: CacheKey, proto: StatefulProtocol, area: Rect },
+    Create {
+        key: CacheKey,
+        image: Arc<DynamicImage>,
+        area: Rect,
+    },
+    Resize {
+        key: CacheKey,
+        proto: StatefulProtocol,
+        area: Rect,
+    },
 }
 
 /// Background resize+encode so drawing never blocks on image work.
@@ -298,7 +306,10 @@ impl CoverRenderer {
                     image: image.clone(),
                     area: r,
                 });
-                Cached { entry: Entry::Pending, used: use_no }
+                Cached {
+                    entry: Entry::Pending,
+                    used: use_no,
+                }
             });
             cached.used = use_no;
             if let Entry::Ready(proto) = &mut cached.entry {
@@ -308,7 +319,11 @@ impl CoverRenderer {
                         if let Entry::Ready(proto) =
                             std::mem::replace(&mut cached.entry, Entry::Pending)
                         {
-                            let _ = encoder.jobs.send(Job::Resize { key: ck, proto, area: target });
+                            let _ = encoder.jobs.send(Job::Resize {
+                                key: ck,
+                                proto,
+                                area: target,
+                            });
                         }
                     }
                     None => proto.render(r, buf),
@@ -321,11 +336,19 @@ impl CoverRenderer {
 
     /// Moves finished encodes into the cache.
     fn collect_encoded(&self, encoder: &Encoder) {
-        let Ok(done) = encoder.done.lock() else { return };
+        let Ok(done) = encoder.done.lock() else {
+            return;
+        };
         let mut cache = self.cache.borrow_mut();
         while let Ok((key, proto)) = done.try_recv() {
             let used = cache.get(&key).map_or(0, |c| c.used);
-            cache.insert(key, Cached { entry: Entry::Ready(proto), used });
+            cache.insert(
+                key,
+                Cached {
+                    entry: Entry::Ready(proto),
+                    used,
+                },
+            );
         }
     }
 }

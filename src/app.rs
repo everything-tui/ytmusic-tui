@@ -2,6 +2,7 @@ use crate::action::*;
 use crate::api::model::*;
 use crate::auth::{self};
 use crate::config::Config;
+use crate::media_controls::MediaControlsBridge;
 use crate::paths::Paths;
 use crate::player::queue::RepeatMode;
 use crate::player::PlaybackState;
@@ -10,7 +11,6 @@ use crate::ui::theme::Theme;
 use crate::ui::widgets::toast::Toast;
 use crate::ui::widgets::track_list::TrackListState;
 use crate::visualizer::{Visualizer, VisualizerStyle};
-use crate::media_controls::MediaControlsBridge;
 use anyhow::Result;
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEventKind,
@@ -196,7 +196,10 @@ pub struct App {
 #[derive(Debug, Clone)]
 pub enum PlayerCommand {
     PlayTrack(Track),
-    PlayTracks { tracks: Vec<Track>, start: usize },
+    PlayTracks {
+        tracks: Vec<Track>,
+        start: usize,
+    },
     Toggle,
     Play,
     Pause,
@@ -215,7 +218,10 @@ pub enum PlayerCommand {
     PlayNext(Track),
     RemoveAt(usize),
     ClearUpcoming,
-    MoveQueue { from: usize, to: usize },
+    MoveQueue {
+        from: usize,
+        to: usize,
+    },
     JumpTo(usize),
     RestoreSession {
         tracks: Vec<Track>,
@@ -266,9 +272,7 @@ impl App {
                 gains_db: config.playback.eq_gains,
             }
             .clamped(),
-            eq_adaptive: crate::player::AdaptiveProfile::from_config(
-                &config.playback.eq_adaptive,
-            ),
+            eq_adaptive: crate::player::AdaptiveProfile::from_config(&config.playback.eq_adaptive),
             adaptive_eq: crate::player::AdaptiveEq::default(),
             paths,
             config,
@@ -362,7 +366,11 @@ impl App {
         if self.covers.contains_key(&key) {
             return;
         }
-        if let Some(thumb) = detail.thumbnails().iter().max_by_key(|t| t.width.unwrap_or(0)) {
+        if let Some(thumb) = detail
+            .thumbnails()
+            .iter()
+            .max_by_key(|t| t.width.unwrap_or(0))
+        {
             cmds.push(Command::FetchArt {
                 url: thumb.url.clone(),
                 video_id: key,
@@ -417,10 +425,7 @@ impl App {
             // Empty entry marks in-flight so navigation doesn't re-queue the same URL.
             self.covers
                 .insert(key.clone(), crate::art::Cover::default());
-            cmds.push(Command::FetchArt {
-                url,
-                video_id: key,
-            });
+            cmds.push(Command::FetchArt { url, video_id: key });
         }
     }
 
@@ -440,7 +445,8 @@ impl App {
             .take(80)
             .collect();
         for (key, url) in requests {
-            self.covers.insert(key.clone(), crate::art::Cover::default());
+            self.covers
+                .insert(key.clone(), crate::art::Cover::default());
             cmds.push(Command::FetchArt { url, video_id: key });
         }
     }
@@ -523,7 +529,11 @@ impl App {
             _ => String::new(),
         };
         let themes = crate::ui::theme::PRESETS.iter().map(|(name, _)| {
-            let current = if *name == self.theme.name { "  ·  current" } else { "" };
+            let current = if *name == self.theme.name {
+                "  ·  current"
+            } else {
+                ""
+            };
             (
                 format!("Theme: {}{current}", crate::ui::theme::display_name(name)),
                 format!("theme:{name}"),
@@ -1117,19 +1127,17 @@ impl App {
             Action::MoveQueueUp => {
                 let s = self.list_state.selected;
                 if s > 0 {
-                    let _ = self.player_cmd_tx.send(PlayerCommand::MoveQueue {
-                        from: s,
-                        to: s - 1,
-                    });
+                    let _ = self
+                        .player_cmd_tx
+                        .send(PlayerCommand::MoveQueue { from: s, to: s - 1 });
                     self.list_state.selected = s - 1;
                 }
             }
             Action::MoveQueueDown => {
                 let s = self.list_state.selected;
-                let _ = self.player_cmd_tx.send(PlayerCommand::MoveQueue {
-                    from: s,
-                    to: s + 1,
-                });
+                let _ = self
+                    .player_cmd_tx
+                    .send(PlayerCommand::MoveQueue { from: s, to: s + 1 });
                 self.list_state.selected = s + 1;
             }
             Action::StartRadio => {
@@ -1267,7 +1275,10 @@ impl App {
         // Re-apply the cover accent on top of the new palette.
         self.accent_for = None;
         self.sync_accent_to_cover();
-        self.push_toast(Toast::info(format!("Theme: {}", crate::ui::theme::display_name(name))));
+        self.push_toast(Toast::info(format!(
+            "Theme: {}",
+            crate::ui::theme::display_name(name)
+        )));
     }
 
     pub fn toggle_control(&mut self) {
@@ -1358,9 +1369,7 @@ impl App {
         if !self.eq.enabled {
             return;
         }
-        let changed =
-            self.adaptive_eq
-                .update(samples, 44_100, self.eq_adaptive);
+        let changed = self.adaptive_eq.update(samples, 44_100, self.eq_adaptive);
         if !changed {
             return;
         }
@@ -1582,7 +1591,7 @@ impl App {
                     if sel + 1 < self.list_len() {
                         self.list_state.selected = sel + 1;
                     }
-                } else if sel % self.grid_cols() == 0 {
+                } else if sel.is_multiple_of(self.grid_cols()) {
                     self.focus_sidebar();
                 } else {
                     self.list_state.selected = sel - 1;
@@ -1725,7 +1734,9 @@ impl App {
             self.current = Some(t.clone());
             self.ensure_track_art(t, &mut cmds);
         }
-        let _ = self.player_cmd_tx.send(PlayerCommand::PlayTracks { tracks, start });
+        let _ = self
+            .player_cmd_tx
+            .send(PlayerCommand::PlayTracks { tracks, start });
         cmds
     }
 
@@ -1902,15 +1913,15 @@ impl App {
                 self.request_home(&mut cmds);
             }
             AppEvent::AuthState(AuthStateEvent::WaitingForBrowser { .. }) => {
-                self.onboarding_status =
-                    "Waiting for you to log in at music.youtube.com…".into();
+                self.onboarding_status = "Waiting for you to log in at music.youtube.com…".into();
             }
             AppEvent::AuthState(AuthStateEvent::Progress(msg)) => {
                 self.onboarding_status = msg;
             }
             AppEvent::AuthState(AuthStateEvent::Failed(e)) => {
                 self.push_toast(Toast::error(e.clone()));
-                self.onboarding_status = format!("{e}\n\n  [Enter] retry   [P] paste cookie   [G] guest");
+                self.onboarding_status =
+                    format!("{e}\n\n  [Enter] retry   [P] paste cookie   [G] guest");
             }
             AppEvent::AuthState(AuthStateEvent::Guest) => {
                 self.signed_in = false;
@@ -1935,9 +1946,7 @@ impl App {
                 self.library_albums.clear();
                 self.library_artists.clear();
                 self.history.clear();
-                self.push_toast(Toast::error(
-                    "Session expired — press L to sign in again",
-                ));
+                self.push_toast(Toast::error("Session expired — press L to sign in again"));
                 self.onboarding_status = format!(
                     "{msg}\n\n  Your username was cached, but YouTube is treating this session as signed out.\n  \
                      Press L (or P) to paste a fresh cURL / cookie."
@@ -2038,9 +2047,7 @@ impl App {
                 self.library_loaded(4);
             }
             AppEvent::RadioTracks { tracks, .. } => {
-                let _ = self
-                    .player_cmd_tx
-                    .send(PlayerCommand::AppendRadio(tracks));
+                let _ = self.player_cmd_tx.send(PlayerCommand::AppendRadio(tracks));
             }
             AppEvent::LyricsLoaded { video_id, lyrics } => {
                 if self.current.as_ref().map(|t| t.video_id.as_str()) == Some(video_id.as_str())
@@ -2058,8 +2065,14 @@ impl App {
             } => {
                 // Always cache — a late reply after a quick skip still warms the
                 // next play, and discarding here left the UI stuck on placeholders.
-                self.covers
-                    .insert(video_id, crate::art::Cover { pixels, image, accent });
+                self.covers.insert(
+                    video_id,
+                    crate::art::Cover {
+                        pixels,
+                        image,
+                        accent,
+                    },
+                );
                 self.prune_covers();
             }
             AppEvent::RateDone { video_id, liked } => {
@@ -2068,11 +2081,7 @@ impl App {
                         t.liked = Some(liked);
                     }
                 }
-                self.push_toast(Toast::info(if liked {
-                    "Liked"
-                } else {
-                    "Removed like"
-                }));
+                self.push_toast(Toast::info(if liked { "Liked" } else { "Removed like" }));
                 self.invalidate_library(0, &mut cmds);
             }
             AppEvent::PlaylistCreated(_) => {
@@ -2234,7 +2243,11 @@ fn mouse_click_action(hit: &crate::ui::HitMap, col: u16, row: u16) -> Option<Act
     if let Some((_, i)) = hit.list_rows.iter().find(|(r, _)| contains(*r, col, row)) {
         return Some(Action::SelectAt(*i));
     }
-    if let Some((_, s, i)) = hit.home_cards.iter().find(|(r, _, _)| contains(*r, col, row)) {
+    if let Some((_, s, i)) = hit
+        .home_cards
+        .iter()
+        .find(|(r, _, _)| contains(*r, col, row))
+    {
         return Some(Action::SelectHomeItem {
             shelf: *s,
             item: *i,
@@ -2326,10 +2339,7 @@ fn handle_terminal_event(
 
 fn event_needs_redraw(ev: &Event) -> bool {
     match ev {
-        Event::Mouse(me) => !matches!(
-            me.kind,
-            MouseEventKind::Moved | MouseEventKind::Drag(_)
-        ),
+        Event::Mouse(me) => !matches!(me.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)),
         Event::FocusGained | Event::FocusLost => false,
         _ => true,
     }
@@ -2337,10 +2347,7 @@ fn event_needs_redraw(ev: &Event) -> bool {
 
 fn app_event_needs_redraw(ev: &AppEvent) -> bool {
     // Download progress is throttled upstream and currently unused by the UI.
-    !matches!(
-        ev,
-        AppEvent::Player(PlayerEvent::DownloadProgress { .. })
-    )
+    !matches!(ev, AppEvent::Player(PlayerEvent::DownloadProgress { .. }))
 }
 
 /// Suck up a burst of pasted characters (or a bracketed paste) without redrawing
@@ -2615,8 +2622,14 @@ mod paste_tests {
 
     #[test]
     fn paste_flattens_to_one_line() {
-        assert_eq!(single_line("  Bausa – Was du Liebe nennst\n", 200), "Bausa – Was du Liebe nennst");
-        assert_eq!(single_line("Post Malone\r\n\tFuck", 200), "Post Malone Fuck");
+        assert_eq!(
+            single_line("  Bausa – Was du Liebe nennst\n", 200),
+            "Bausa – Was du Liebe nennst"
+        );
+        assert_eq!(
+            single_line("Post Malone\r\n\tFuck", 200),
+            "Post Malone Fuck"
+        );
         assert_eq!(single_line("a\u{1b}[31mb", 200), "a [31mb");
         assert_eq!(single_line("Träumerei über alles", 8), "Träumere");
         assert_eq!(single_line(" \n\t ", 200), "");
@@ -2649,7 +2662,10 @@ mod prewarm_tests {
                     ShelfItem::Track(Track {
                         video_id: format!("v{i}"),
                         title: format!("Song {i}"),
-                        artists: vec![ArtistRef { id: None, name: "A".into() }],
+                        artists: vec![ArtistRef {
+                            id: None,
+                            name: "A".into(),
+                        }],
                         album: None,
                         duration: None,
                         thumbnails: vec![],

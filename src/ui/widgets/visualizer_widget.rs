@@ -20,9 +20,7 @@ pub fn render_visualizer(
         render_bars(viz, area, buf, theme);
     } else {
         let line = viz.render_line(area.width as usize);
-        Paragraph::new(line)
-            .style(theme.accent())
-            .render(area, buf);
+        Paragraph::new(line).style(theme.accent()).render(area, buf);
     }
 }
 

@@ -105,7 +105,10 @@ fn itag_quality(itag: i64) -> Option<(&'static str, u32)> {
 
 /// Container of a format: WebM for Opus, mp4 for progressive video, m4a otherwise.
 fn format_ext(f: &StreamFormat) -> &'static str {
-    if f.mime_type.as_deref().is_some_and(|m| m.starts_with("audio/webm")) {
+    if f.mime_type
+        .as_deref()
+        .is_some_and(|m| m.starts_with("audio/webm"))
+    {
         "webm"
     } else if f.itag == Some(PROGRESSIVE_ITAG) {
         "mp4"
@@ -156,9 +159,15 @@ impl Premium {
 /// A signed-in WEB_REMIX request may get past any of these: besides Premium and
 /// age gates, some Music-only releases are refused as "not available" elsewhere.
 fn is_playability_error(err: &str) -> bool {
-    ["UNPLAYABLE:", "LOGIN_REQUIRED:", "ERROR:", "AGE_", "CONTENT_CHECK_REQUIRED:"]
-        .iter()
-        .any(|p| err.starts_with(p))
+    [
+        "UNPLAYABLE:",
+        "LOGIN_REQUIRED:",
+        "ERROR:",
+        "AGE_",
+        "CONTENT_CHECK_REQUIRED:",
+    ]
+    .iter()
+    .any(|p| err.starts_with(p))
 }
 
 /// YouTube refused the video for every client — retrying won't help.
@@ -304,7 +313,10 @@ impl Resolver {
     }
 
     pub async fn set_cookies(&self, cookies: Option<String>) {
-        let signed_in = cookies.as_deref().and_then(manual::sapisid_from_cookies).is_some();
+        let signed_in = cookies
+            .as_deref()
+            .and_then(manual::sapisid_from_cookies)
+            .is_some();
         *self.cookies.lock().await = cookies.clone();
         // Auth change invalidates any cookie-bound URLs / visitors.
         self.cache.lock().await.clear();
@@ -483,7 +495,11 @@ impl Resolver {
             .is_some()
     }
 
-    async fn resolve_uncached(&self, video_id: &str, exclude: Option<&str>) -> Result<ResolvedStream> {
+    async fn resolve_uncached(
+        &self,
+        video_id: &str,
+        exclude: Option<&str>,
+    ) -> Result<ResolvedStream> {
         let mut last_err: Option<anyhow::Error> = None;
         let mut errors: Vec<String> = Vec::new();
         let mut retried_visitor = false;
@@ -528,7 +544,10 @@ impl Resolver {
 
         for &client in CLIENTS {
             if skipped.iter().any(|c| c == client.name) {
-                debug!("skipping {} for {video_id} (prior CDN 403 or excluded)", client.name);
+                debug!(
+                    "skipping {} for {video_id} (prior CDN 403 or excluded)",
+                    client.name
+                );
                 continue;
             }
             match self.resolve_with_client(video_id, client).await {
@@ -627,8 +646,7 @@ impl Resolver {
             );
         }
 
-        let parsed: PlayerResponse =
-            serde_json::from_str(&text).context("parsing player JSON")?;
+        let parsed: PlayerResponse = serde_json::from_str(&text).context("parsing player JSON")?;
 
         // Bind CDN fetches to the visitor that minted THIS url — a sticky visitor
         // from another client (e.g. WEB_EMBEDDED) is a common googlevideo 403 cause.
@@ -769,12 +787,7 @@ impl Resolver {
     /// Signed-in YouTube Music web request; deciphers the chosen format's URL.
     /// Also reports whether the Premium itag was offered (a Premium account).
     async fn resolve_web_remix(&self, video_id: &str) -> Result<(ResolvedStream, bool)> {
-        let cookies = self
-            .cookies
-            .lock()
-            .await
-            .clone()
-            .context("not signed in")?;
+        let cookies = self.cookies.lock().await.clone().context("not signed in")?;
         let sap = manual::sapisid_from_cookies(&cookies).context("no SAPISID cookie")?;
         let player = self.jsc.player().await?;
 
@@ -861,11 +874,21 @@ impl Resolver {
         let (base_url, cipher) = match (&format.url, &format.signature_cipher) {
             (Some(url), _) => (url.clone(), None),
             (None, Some(sc)) => {
-                let fields: HashMap<String, String> =
-                    url::form_urlencoded::parse(sc.as_bytes()).into_owned().collect();
-                let url = fields.get("url").cloned().context("signatureCipher without url")?;
-                let s = fields.get("s").cloned().context("signatureCipher without s")?;
-                let sp = fields.get("sp").cloned().unwrap_or_else(|| "signature".into());
+                let fields: HashMap<String, String> = url::form_urlencoded::parse(sc.as_bytes())
+                    .into_owned()
+                    .collect();
+                let url = fields
+                    .get("url")
+                    .cloned()
+                    .context("signatureCipher without url")?;
+                let s = fields
+                    .get("s")
+                    .cloned()
+                    .context("signatureCipher without s")?;
+                let sp = fields
+                    .get("sp")
+                    .cloned()
+                    .unwrap_or_else(|| "signature".into());
                 (url, Some((s, sp)))
             }
             (None, None) => bail!("format has neither url nor signatureCipher"),
@@ -897,7 +920,11 @@ impl Resolver {
             .query_pairs()
             .map(|(k, v)| {
                 let v = if k == "n" {
-                    solved.n.get(v.as_ref()).cloned().unwrap_or_else(|| v.into_owned())
+                    solved
+                        .n
+                        .get(v.as_ref())
+                        .cloned()
+                        .unwrap_or_else(|| v.into_owned())
                 } else {
                     v.into_owned()
                 };
@@ -1104,7 +1131,10 @@ fn select_format<'a>(
     adaptive: &'a [StreamFormat],
     progressive: &'a [StreamFormat],
 ) -> Option<&'a StreamFormat> {
-    if let Some(f) = pick_audio(adaptive.iter().filter(|f| has_http_url(f)), PLAIN_PREFERENCE) {
+    if let Some(f) = pick_audio(
+        adaptive.iter().filter(|f| has_http_url(f)),
+        PLAIN_PREFERENCE,
+    ) {
         return Some(f);
     }
     progressive.iter().find(|f| {
@@ -1120,7 +1150,9 @@ fn select_format<'a>(
 /// Best YouTube Music audio (see [`REMIX_PREFERENCE`]); URLs may be ciphered.
 fn select_remix_format(adaptive: &[StreamFormat]) -> Option<&StreamFormat> {
     pick_audio(
-        adaptive.iter().filter(|f| has_http_url(f) || f.signature_cipher.is_some()),
+        adaptive
+            .iter()
+            .filter(|f| has_http_url(f) || f.signature_cipher.is_some()),
         REMIX_PREFERENCE,
     )
 }
@@ -1153,11 +1185,7 @@ mod tests {
     use super::*;
 
     fn load_fixture(name: &str) -> PlayerResponse {
-        let path = format!(
-            "{}/tests/fixtures/{}",
-            env!("CARGO_MANIFEST_DIR"),
-            name
-        );
+        let path = format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), name);
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
         serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {path}: {e}"))
     }
@@ -1166,31 +1194,43 @@ mod tests {
     fn classifies_permanent_refusals() {
         let e = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
-            unplayable_reason(&e(&[
-                "UNPLAYABLE: This video is only available to Music Premium members",
-                "ERROR: This video is unavailable",
-            ]), true),
+            unplayable_reason(
+                &e(&[
+                    "UNPLAYABLE: This video is only available to Music Premium members",
+                    "ERROR: This video is unavailable",
+                ]),
+                true
+            ),
             Some("requires Music Premium")
         );
         assert_eq!(
-            unplayable_reason(&e(&[
-                "LOGIN_REQUIRED: Sign in to confirm your age",
-                "ERROR: This video is unavailable",
-            ]), false),
+            unplayable_reason(
+                &e(&[
+                    "LOGIN_REQUIRED: Sign in to confirm your age",
+                    "ERROR: This video is unavailable",
+                ]),
+                false
+            ),
             Some("age-restricted, sign in to play")
         );
         assert_eq!(
-            unplayable_reason(&e(&[
-                "UNPLAYABLE: This video is not available",
-                "ERROR: This video is unavailable",
-            ]), true),
+            unplayable_reason(
+                &e(&[
+                    "UNPLAYABLE: This video is not available",
+                    "ERROR: This video is unavailable",
+                ]),
+                true
+            ),
             Some("not available on YouTube")
         );
         assert_eq!(
-            unplayable_reason(&e(&[
-                "LOGIN_REQUIRED: Sign in to confirm you’re not a bot",
-                "ERROR: This video is unavailable",
-            ]), true),
+            unplayable_reason(
+                &e(&[
+                    "LOGIN_REQUIRED: Sign in to confirm you’re not a bot",
+                    "ERROR: This video is unavailable",
+                ]),
+                true
+            ),
             None
         );
     }
@@ -1231,7 +1271,10 @@ mod tests {
             let stream = resolver.resolve(vid).await.unwrap();
             assert_eq!(stream.client_name, client, "{vid}");
             if client == WEB_REMIX_NAME {
-                assert!(matches!(stream.itag, Some(PREMIUM_OPUS_ITAG | PREMIUM_ITAG)), "{vid} not Premium");
+                assert!(
+                    matches!(stream.itag, Some(PREMIUM_OPUS_ITAG | PREMIUM_ITAG)),
+                    "{vid} not Premium"
+                );
             }
             let mut req = reqwest::Client::new()
                 .get(&stream.url)
@@ -1247,7 +1290,11 @@ mod tests {
 
         // Cache upgrades: official releases have a Premium rendition to swap in; user
         // uploads (Mq0aagbZgUM) and plain uploads top out at Opus ~150 kbps.
-        let better = resolver.best_stream("3QY9AzTHoio").await.unwrap().expect("stream");
+        let better = resolver
+            .best_stream("3QY9AzTHoio")
+            .await
+            .unwrap()
+            .expect("stream");
         assert_eq!(better.quality(), Some(("Opus", 256)));
         for ugc in ["Mq0aagbZgUM", "jNQXAC9IVRw"] {
             let best = resolver.best_stream(ugc).await.unwrap().expect("stream");
@@ -1261,7 +1308,10 @@ mod tests {
         // m4a stand-in replaced by the WebM file.
         let cached = dl.cached_file("3QY9AzTHoio").unwrap();
         assert_eq!(cached.extension().unwrap(), "webm");
-        assert_eq!(Some(std::fs::metadata(&cached).unwrap().len()), better.filesize);
+        assert_eq!(
+            Some(std::fs::metadata(&cached).unwrap().len()),
+            better.filesize
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1270,7 +1320,10 @@ mod tests {
         let free = (0..PREMIUM_MISSES).fold(Premium::UNKNOWN, |p, _| p.observe(false));
         assert_eq!(free, Premium::No);
         // A single track without 256 kbps doesn't settle it, nor demote Premium.
-        assert_eq!(Premium::UNKNOWN.observe(false), Premium::Unknown { misses: 1 });
+        assert_eq!(
+            Premium::UNKNOWN.observe(false),
+            Premium::Unknown { misses: 1 }
+        );
         assert_eq!(Premium::UNKNOWN.observe(false).observe(true), Premium::Yes);
         assert_eq!(Premium::Yes.observe(false), Premium::Yes);
     }
@@ -1296,7 +1349,12 @@ mod tests {
             mime_type: Some("audio/webm; codecs=\"opus\"".into()),
             ..f(itag, bitrate, true)
         };
-        let premium = [f(140, 130_000, true), f(141, 260_000, true), opus(251, 150_000), opus(774, 270_000)];
+        let premium = [
+            f(140, 130_000, true),
+            f(141, 260_000, true),
+            opus(251, 150_000),
+            opus(774, 270_000),
+        ];
         let best = select_remix_format(&premium).unwrap();
         assert_eq!((best.itag, format_ext(best)), (Some(774), "webm"));
         let free = [f(140, 130_000, true), opus(250, 70_000), opus(251, 150_000)];
@@ -1313,7 +1371,11 @@ mod tests {
         assert_eq!(format_ext(f), "webm");
         assert!(f.url.as_ref().unwrap().starts_with("https://"));
         // Without Opus, AAC 140.
-        let aac: Vec<_> = streaming.adaptive_formats.into_iter().filter(|f| f.itag != Some(251)).collect();
+        let aac: Vec<_> = streaming
+            .adaptive_formats
+            .into_iter()
+            .filter(|f| f.itag != Some(251))
+            .collect();
         let f = select_format(&aac, &[]).expect("format");
         assert_eq!((f.itag, format_ext(f)), (Some(140), "m4a"));
     }
@@ -1331,7 +1393,11 @@ mod tests {
         let streaming = resp.streaming.unwrap();
         let f = select_format(&streaming.adaptive_formats, &streaming.formats).expect("format");
         assert_eq!(f.itag, Some(251));
-        let aac: Vec<_> = streaming.adaptive_formats.into_iter().filter(|f| f.itag != Some(251)).collect();
+        let aac: Vec<_> = streaming
+            .adaptive_formats
+            .into_iter()
+            .filter(|f| f.itag != Some(251))
+            .collect();
         let f = select_format(&aac, &[]).expect("format");
         assert_eq!(f.itag, Some(141));
         assert_eq!(f.bitrate, Some(256000));
@@ -1404,8 +1470,7 @@ mod tests {
     fn web_embedded_context_has_embed_url() {
         let ctx = client_context(WEB_EMBEDDED, "vis");
         assert_eq!(
-            ctx.pointer("/thirdParty/embedUrl")
-                .and_then(|v| v.as_str()),
+            ctx.pointer("/thirdParty/embedUrl").and_then(|v| v.as_str()),
             Some("https://www.reddit.com/")
         );
         assert_eq!(

@@ -1,7 +1,7 @@
 use rustfft::{num_complex::Complex, FftPlanner};
 use std::f32::consts::PI;
 
-const BARS: &'static str = "▁▂▃▄▅▆▇█";
+const BARS: &str = "▁▂▃▄▅▆▇█";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisualizerStyle {
@@ -85,10 +85,7 @@ impl Visualizer {
         let denom = (n as f32 - 1.0).max(1.0);
         for (i, &s) in slice.iter().enumerate() {
             let w = 0.5 * (1.0 - (2.0 * PI * i as f32 / denom).cos());
-            self.fft_buf.push(Complex {
-                re: s * w,
-                im: 0.0,
-            });
+            self.fft_buf.push(Complex { re: s * w, im: 0.0 });
         }
         let mut size = n.next_power_of_two();
         if size < 256 {
@@ -114,8 +111,7 @@ impl Visualizer {
             let i1 = (((f1 / nyquist) * (size as f32 / 2.0)) as usize + 1).min(size / 2);
             let mut sum = 0.0;
             let mut count = 0;
-            for i in i0..i1 {
-                let c = self.fft_buf[i];
+            for c in &self.fft_buf[i0..i1] {
                 sum += (c.re * c.re + c.im * c.im).sqrt();
                 count += 1;
             }
@@ -167,7 +163,7 @@ impl Visualizer {
                 }
                 VisualizerStyle::Mirror => {
                     let mid = width / 2;
-                    let dist = if i < mid { mid - i } else { i - mid };
+                    let dist = mid.abs_diff(i);
                     let bi = dist * n / mid.max(1);
                     (self.bands.get(bi).copied().unwrap_or(0.0) * 7.0) as usize
                 }

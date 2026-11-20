@@ -133,12 +133,7 @@ impl AdaptiveEq {
 
     /// Measure spectrum, compute target gains, smooth into `self.gains_db`.
     /// Returns `true` if gains changed enough to re-apply (> 0.15 dB any band).
-    pub fn update(
-        &mut self,
-        samples: &[f32],
-        sample_rate: u32,
-        profile: AdaptiveProfile,
-    ) -> bool {
+    pub fn update(&mut self, samples: &[f32], sample_rate: u32, profile: AdaptiveProfile) -> bool {
         if profile == AdaptiveProfile::Off || samples.len() < 256 {
             return false;
         }
@@ -179,10 +174,7 @@ pub fn measure_relative_db(
     let denom = (n as f32 - 1.0).max(1.0);
     for (i, &s) in slice.iter().enumerate() {
         let w = 0.5 * (1.0 - (2.0 * PI * i as f32 / denom).cos());
-        state.fft_buf.push(Complex {
-            re: s * w,
-            im: 0.0,
-        });
+        state.fft_buf.push(Complex { re: s * w, im: 0.0 });
     }
     let size = n.next_power_of_two().max(256);
     state.fft_buf.resize(size, Complex { re: 0.0, im: 0.0 });
@@ -203,8 +195,7 @@ pub fn measure_relative_db(
         let i1 = (((f1 / nyquist) * (size as f32 / 2.0)) as usize + 1).min(size / 2);
         let mut sum = 0.0f32;
         let mut count = 0usize;
-        for i in i0..i1.max(i0 + 1) {
-            let c = state.fft_buf[i];
+        for c in &state.fft_buf[i0..i1.max(i0 + 1)] {
             sum += c.re * c.re + c.im * c.im;
             count += 1;
         }

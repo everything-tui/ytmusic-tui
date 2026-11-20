@@ -171,8 +171,9 @@ pub async fn validate_cookies_full(
         .timeout(std::time::Duration::from_secs(20))
         .build()?;
 
-    let (mut visitor_id, mut user_session_id) =
-        fetch_ytcfg_ids(&client, cookies).await.unwrap_or((None, None));
+    let (mut visitor_id, mut user_session_id) = fetch_ytcfg_ids(&client, cookies)
+        .await
+        .unwrap_or((None, None));
     if visitor_id.is_none() {
         visitor_id = visitor_hint;
     }
@@ -276,9 +277,7 @@ pub fn parse_ytcfg_ids(html: &str) -> (Option<String>, Option<String>) {
     // ytcfg.set({...}); — pull a few known keys with a light scan.
     let visitor = capture_ytcfg_string(html, "VISITOR_DATA");
     let datasync = capture_ytcfg_string(html, "DATASYNC_ID");
-    let user_session = datasync
-        .as_deref()
-        .and_then(user_session_id_from_datasync);
+    let user_session = datasync.as_deref().and_then(user_session_id_from_datasync);
     (visitor, user_session)
 }
 
@@ -304,10 +303,7 @@ fn capture_ytcfg_string(html: &str, key: &str) -> Option<String> {
 
 pub fn user_session_id_from_datasync(data_sync_id: &str) -> Option<String> {
     // "delegated||user" → user; "user||" → user
-    let (first, second) = data_sync_id
-        .split_once("||")
-        .map(|(a, b)| (a, b))
-        .unwrap_or((data_sync_id, ""));
+    let (first, second) = data_sync_id.split_once("||").unwrap_or((data_sync_id, ""));
     if !second.is_empty() {
         Some(second.to_string())
     } else if !first.is_empty() {
@@ -319,7 +315,9 @@ pub fn user_session_id_from_datasync(data_sync_id: &str) -> Option<String> {
 
 /// Read `logged_in` / `yt_li` from Innertube `responseContext.serviceTrackingParams`.
 pub fn logged_in_from_response(json: &serde_json::Value) -> Option<bool> {
-    let params = json.pointer("/responseContext/serviceTrackingParams")?.as_array()?;
+    let params = json
+        .pointer("/responseContext/serviceTrackingParams")?
+        .as_array()?;
     for group in params {
         let Some(arr) = group.get("params").and_then(|v| v.as_array()) else {
             continue;
@@ -406,27 +404,6 @@ fn find_string_by_key(v: &serde_json::Value, key: &str) -> Option<String> {
 
 pub const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn datasync_primary_channel() {
-        assert_eq!(
-            user_session_id_from_datasync("abc123||").as_deref(),
-            Some("abc123")
-        );
-    }
-
-    #[test]
-    fn datasync_delegated_channel() {
-        assert_eq!(
-            user_session_id_from_datasync("delegated||user99").as_deref(),
-            Some("user99")
-        );
-    }
-}
-
 const ROTATE_URL: &str = "https://accounts.google.com/RotateCookies";
 
 /// Asks Google to rotate the short-lived session cookies, exactly as a browser tab does in
@@ -458,10 +435,7 @@ pub async fn rotate_cookies(cookies: &str) -> Result<Vec<(String, String)>> {
 
 /// Keeps the saved session alive on its own: rotates cookies shortly after launch and then
 /// periodically, saving the result and handing it to the API client.
-pub async fn keepalive_loop(
-    paths: Arc<Paths>,
-    api: mpsc::UnboundedSender<crate::action::Command>,
-) {
+pub async fn keepalive_loop(paths: Arc<Paths>, api: mpsc::UnboundedSender<crate::action::Command>) {
     let mut wait = std::time::Duration::from_secs(5);
     loop {
         tokio::time::sleep(wait).await;
@@ -502,7 +476,9 @@ pub enum Recovery {
 /// network being down or YouTube returning a hiccup).
 fn is_definitive_rejection(e: &anyhow::Error) -> bool {
     let m = format!("{e:#}");
-    m.contains("signed out") || m.contains("HTTP 401") || m.contains("HTTP 403")
+    m.contains("signed out")
+        || m.contains("HTTP 401")
+        || m.contains("HTTP 403")
         || m.contains("missing SAPISID")
 }
 
@@ -510,12 +486,11 @@ fn is_definitive_rejection(e: &anyhow::Error) -> bool {
 /// browser would and re-validates.
 pub async fn recover_session(paths: Arc<Paths>) -> Recovery {
     let p = paths.clone();
-    let session = match tokio::task::spawn_blocking(move || AuthService::new(p).session().cloned())
-        .await
-    {
-        Ok(Some(s)) => s,
-        _ => return Recovery::Rejected("no saved session".into()),
-    };
+    let session =
+        match tokio::task::spawn_blocking(move || AuthService::new(p).session().cloned()).await {
+            Ok(Some(s)) => s,
+            _ => return Recovery::Rejected("no saved session".into()),
+        };
     // A failed rotation (e.g. 401) is not fatal: the old cookies may still be accepted.
     let cookies = match rotate_saved_session(paths.clone()).await {
         Ok(Some(updated)) => updated.cookies,
@@ -533,5 +508,26 @@ pub async fn recover_session(paths: Arc<Paths>) -> Recovery {
         Ok(s) => Recovery::Refreshed(s),
         Err(e) if is_definitive_rejection(&e) => Recovery::Rejected(e.to_string()),
         Err(e) => Recovery::Transient(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn datasync_primary_channel() {
+        assert_eq!(
+            user_session_id_from_datasync("abc123||").as_deref(),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn datasync_delegated_channel() {
+        assert_eq!(
+            user_session_id_from_datasync("delegated||user99").as_deref(),
+            Some("user99")
+        );
     }
 }

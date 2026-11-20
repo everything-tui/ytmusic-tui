@@ -98,7 +98,12 @@ impl Snapshot {
             muted: app.muted,
             shuffle: app.shuffle,
             repeat: repeat_label(app.repeat).into(),
-            queue: app.queue.iter().take(MAX_QUEUE).map(TrackInfo::from).collect(),
+            queue: app
+                .queue
+                .iter()
+                .take(MAX_QUEUE)
+                .map(TrackInfo::from)
+                .collect(),
             queue_cursor: app.queue_cursor,
         }
     }
@@ -494,8 +499,6 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,7 +557,10 @@ mod tests {
         assert!(action_rx.try_recv().is_err());
         snapshot.lock().shuffle = true;
         roundtrip(&ep, json!({"cmd": "shuffle", "enabled": false})).await;
-        assert!(matches!(action_rx.recv().await, Some(Action::ToggleShuffle)));
+        assert!(matches!(
+            action_rx.recv().await,
+            Some(Action::ToggleShuffle)
+        ));
 
         let r = roundtrip(&ep, json!({"cmd": "play_track", "video_id": "abc123"})).await;
         assert_eq!(r["ok"], true);

@@ -4,3 +4,14 @@
 *.log
 dist/
 .cargo-dist/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# IDE / editor
+.idea/
+.cursor/
+
+brag-output/

@@ -100,7 +100,9 @@ impl EngineHandle {
         std::thread::Builder::new()
             .name("yt-tui-audio".into())
             .spawn(move || {
-                if let Err(e) = run_engine(cmd_rx, event_tx, samples_thread, eq_thread, position_thread) {
+                if let Err(e) =
+                    run_engine(cmd_rx, event_tx, samples_thread, eq_thread, position_thread)
+                {
                     error!("audio engine exited: {e}");
                 }
             })

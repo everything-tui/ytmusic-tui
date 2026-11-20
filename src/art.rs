@@ -47,7 +47,11 @@ pub fn load_cover_image(path: &Path) -> Result<image::DynamicImage> {
     let side = w.min(h);
     let square = img.crop_imm((w - side) / 2, (h - side) / 2, side, side);
     Ok(if side > COVER_MAX_PX {
-        square.resize_exact(COVER_MAX_PX, COVER_MAX_PX, image::imageops::FilterType::Lanczos3)
+        square.resize_exact(
+            COVER_MAX_PX,
+            COVER_MAX_PX,
+            image::imageops::FilterType::Lanczos3,
+        )
     } else {
         square
     })
@@ -165,7 +169,12 @@ async fn fetch_art_inner(
 async fn download_art_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
     let mut candidates = vec![url.to_string()];
     if url.contains("i.ytimg.com") {
-        for name in ["hqdefault.jpg", "mqdefault.jpg", "sddefault.jpg", "default.jpg"] {
+        for name in [
+            "hqdefault.jpg",
+            "mqdefault.jpg",
+            "sddefault.jpg",
+            "default.jpg",
+        ] {
             if let Some(base) = url.rsplit_once('/') {
                 let alt = format!("{}/{}", base.0, name);
                 if alt != url {
@@ -302,7 +311,11 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
     let (r, g, b) = if s == 0.0 {
         (l, l, l)
     } else {
-        let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+        let q = if l < 0.5 {
+            l * (1.0 + s)
+        } else {
+            l + s - l * s
+        };
         let p = 2.0 * l - q;
         (
             hue2rgb(p, q, h + 1.0 / 3.0),
@@ -332,7 +345,8 @@ mod accent_tests {
 
     fn accent_of(name: &str, fill: impl Fn(u32, u32) -> [u8; 3]) -> (u8, u8, u8) {
         let img = image::RgbImage::from_fn(100, 100, |x, y| image::Rgb(fill(x, y)));
-        let path = std::env::temp_dir().join(format!("yt-tui-accent-{}-{name}.png", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("yt-tui-accent-{}-{name}.png", std::process::id()));
         img.save(&path).unwrap();
         let out = extract_accent(&path).unwrap();
         let _ = std::fs::remove_file(path);
@@ -341,13 +355,22 @@ mod accent_tests {
 
     #[test]
     fn mostly_blue_cover_with_red_spot_is_blue() {
-        let (r, _, b) = accent_of("blue", |x, y| if x < 8 && y < 8 { [230, 20, 20] } else { [30, 80, 200] });
+        let (r, _, b) = accent_of("blue", |x, y| {
+            if x < 8 && y < 8 {
+                [230, 20, 20]
+            } else {
+                [30, 80, 200]
+            }
+        });
         assert!(b > r, "expected blue accent, got r={r} b={b}");
     }
 
     #[test]
     fn grayscale_cover_is_neutral() {
-        let (r, g, b) = accent_of("gray", |x, _| { let v = (x * 2) as u8; [v, v, v] });
+        let (r, g, b) = accent_of("gray", |x, _| {
+            let v = (x * 2) as u8;
+            [v, v, v]
+        });
         assert!(r.abs_diff(g) < 6 && g.abs_diff(b) < 6);
     }
 }

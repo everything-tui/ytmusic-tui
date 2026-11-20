@@ -57,7 +57,12 @@ pub fn render_art_placeholder(buf: &mut Buffer, r: Rect, theme: &Theme) {
     let note = "♫";
     let y = r.y + r.height / 2;
     let x = r.x + r.width / 2;
-    buf.set_string(x, y, note, Style::default().fg(theme.text_muted).bg(theme.bg_selected));
+    buf.set_string(
+        x,
+        y,
+        note,
+        Style::default().fg(theme.text_muted).bg(theme.bg_selected),
+    );
 }
 
 /// `0:42  ━━━━━━━━●───────  3:20` — slim progress line with a playhead knob; returns the bar rect for click-to-seek.
@@ -135,7 +140,9 @@ pub fn render_controls(
     if area.width == 0 || area.height == 0 {
         return Vec::new();
     }
-    let active = Style::default().fg(theme.accent).add_modifier(Modifier::BOLD);
+    let active = Style::default()
+        .fg(theme.accent)
+        .add_modifier(Modifier::BOLD);
     let inactive = Style::default().fg(theme.text_muted);
     let normal = Style::default().fg(theme.text);
     let loading = matches!(c.state, PlaybackState::Loading | PlaybackState::Buffering);
@@ -143,10 +150,19 @@ pub fn render_controls(
 
     // (icon, glyph, style, action)
     let buttons: Vec<(Icon, &str, Style, Action)> = vec![
-        (Icon::Shuffle, "⇄", if c.shuffle { active } else { inactive }, Action::ToggleShuffle),
+        (
+            Icon::Shuffle,
+            "⇄",
+            if c.shuffle { active } else { inactive },
+            Action::ToggleShuffle,
+        ),
         (Icon::Prev, "⏮", normal, Action::Previous),
         (
-            if c.state == PlaybackState::Playing { Icon::Pause } else { Icon::Play },
+            if c.state == PlaybackState::Playing {
+                Icon::Pause
+            } else {
+                Icon::Play
+            },
             match c.state {
                 PlaybackState::Playing => "⏸",
                 _ if loading => spin,
@@ -157,13 +173,29 @@ pub fn render_controls(
         ),
         (Icon::Next, "⏭", normal, Action::Next),
         (
-            if c.repeat == RepeatMode::One { Icon::RepeatOne } else { Icon::Repeat },
-            if c.repeat == RepeatMode::One { "↻¹" } else { "↻" },
-            if c.repeat == RepeatMode::Off { inactive } else { active },
+            if c.repeat == RepeatMode::One {
+                Icon::RepeatOne
+            } else {
+                Icon::Repeat
+            },
+            if c.repeat == RepeatMode::One {
+                "↻¹"
+            } else {
+                "↻"
+            },
+            if c.repeat == RepeatMode::Off {
+                inactive
+            } else {
+                active
+            },
             Action::CycleRepeat,
         ),
         (
-            if c.liked { Icon::Heart } else { Icon::HeartOutline },
+            if c.liked {
+                Icon::Heart
+            } else {
+                Icon::HeartOutline
+            },
             if c.liked { "♥" } else { "♡" },
             if c.liked { active } else { inactive },
             Action::LikeCurrent,
@@ -181,9 +213,25 @@ pub fn render_controls(
 
     let rows = area.height.min(2);
     let icon_w = renderer.map(|r| r.width_for_rows(rows)).unwrap_or(0);
-    let width_of = |glyph: &str| if renderer.is_some() { icon_w } else { glyph.width() as u16 };
+    let width_of = |glyph: &str| {
+        if renderer.is_some() {
+            icon_w
+        } else {
+            glyph.width() as u16
+        }
+    };
     let gap_for = |cut: u16, play: bool| -> u16 {
-        let base: u16 = if renderer.is_some() { if play { 4 } else { 3 } } else if play { 3 } else { 2 };
+        let base: u16 = if renderer.is_some() {
+            if play {
+                4
+            } else {
+                3
+            }
+        } else if play {
+            3
+        } else {
+            2
+        };
         base.saturating_sub(cut).max(1)
     };
     let total_at = |cut: u16| -> u16 {
@@ -199,8 +247,18 @@ pub fn render_controls(
     let top = area.y + (area.height - rows) / 2;
     let mid = area.y + (area.height - 1) / 2;
     // Icons are opaque images: match whatever background the caller painted here.
-    let under = buf.cell((area.x, area.y)).map(|c| c.bg).unwrap_or(theme.bg_player);
-    let bg = rgb_of(if under == Color::Reset { theme.bg_player } else { under }, (24, 24, 24));
+    let under = buf
+        .cell((area.x, area.y))
+        .map(|c| c.bg)
+        .unwrap_or(theme.bg_player);
+    let bg = rgb_of(
+        if under == Color::Reset {
+            theme.bg_player
+        } else {
+            under
+        },
+        (24, 24, 24),
+    );
     let mut hits = Vec::new();
     for (icon, glyph, style, action) in buttons {
         let is_play = matches!(action, Action::PlayPause);
@@ -217,7 +275,18 @@ pub fn render_controls(
         };
         let drawn = renderer.is_some_and(|r| {
             let fg = rgb_of(style.fg.unwrap_or(theme.text), (230, 230, 230));
-            r.draw_icon(icon, fg, bg, Rect { x, y: top, width: w, height: rows }, buf)
+            r.draw_icon(
+                icon,
+                fg,
+                bg,
+                Rect {
+                    x,
+                    y: top,
+                    width: w,
+                    height: rows,
+                },
+                buf,
+            )
         });
         if !drawn {
             buf.set_string(x, mid, glyph, style);
@@ -230,7 +299,13 @@ pub fn render_controls(
 
 /// `━━━━━━━━──── 65%` — slim level line (with a speaker icon in Nerd Font mode) stretched across `area` + percentage.
 /// Returns the block bar rect for click-to-set volume.
-pub fn render_volume(buf: &mut Buffer, area: Rect, volume: f32, muted: bool, theme: &Theme) -> Rect {
+pub fn render_volume(
+    buf: &mut Buffer,
+    area: Rect,
+    volume: f32,
+    muted: bool,
+    theme: &Theme,
+) -> Rect {
     if area.width < 6 || area.height == 0 {
         return Rect::default();
     }
@@ -241,22 +316,41 @@ pub fn render_volume(buf: &mut Buffer, area: Rect, volume: f32, muted: bool, the
         format!("{:>4}", format!("{:.0}%", volume * 100.0))
     };
     // [icon + space] + line + space + pct; the line stretches to fill `area`.
-    let icon = glyph(theme, if silent { Glyph::VolumeOff } else { Glyph::Volume });
+    let icon = glyph(
+        theme,
+        if silent {
+            Glyph::VolumeOff
+        } else {
+            Glyph::Volume
+        },
+    );
     let lead = if icon.is_empty() { 0 } else { 2 };
-    let segs = area.width.saturating_sub(lead + 1 + pct.width() as u16).max(3);
+    let segs = area
+        .width
+        .saturating_sub(lead + 1 + pct.width() as u16)
+        .max(3);
     let x0 = area.x;
     if !icon.is_empty() {
         buf.set_string(x0, area.y, icon, theme.dim());
     }
 
-    let bar = Rect { x: x0 + lead, y: area.y, width: segs, height: 1 };
+    let bar = Rect {
+        x: x0 + lead,
+        y: area.y,
+        width: segs,
+        height: 1,
+    };
     let filled = if silent {
         0
     } else {
         (volume.clamp(0.0, 1.0) * segs as f32).round() as u16
     };
     for i in 0..segs {
-        let (sym, color) = if i < filled { ("━", theme.dim) } else { ("─", theme.faint) };
+        let (sym, color) = if i < filled {
+            ("━", theme.dim)
+        } else {
+            ("─", theme.faint)
+        };
         buf.set_string(bar.x + i, bar.y, sym, Style::default().fg(color));
     }
     buf.set_string(bar.x + segs + 1, area.y, &pct, theme.muted());

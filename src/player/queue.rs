@@ -51,7 +51,12 @@ pub struct Queue {
 }
 
 impl Queue {
-    pub fn from_session(tracks: Vec<Track>, index: usize, shuffle: bool, repeat: RepeatMode) -> Self {
+    pub fn from_session(
+        tracks: Vec<Track>,
+        index: usize,
+        shuffle: bool,
+        repeat: RepeatMode,
+    ) -> Self {
         let n = tracks.len();
         let mut q = Self {
             tracks,

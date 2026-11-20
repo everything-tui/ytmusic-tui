@@ -28,13 +28,17 @@ pub fn map_key(ctx: InputContext, key: KeyEvent) -> Option<Action> {
     match ctx {
         InputContext::Help => {
             return match key.code {
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => Some(Action::CloseOverlay),
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                    Some(Action::CloseOverlay)
+                }
                 _ => None,
             };
         }
         InputContext::ConfirmQuit => {
             return match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => Some(Action::ConfirmQuit),
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    Some(Action::ConfirmQuit)
+                }
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => Some(Action::CancelQuit),
                 // Second Ctrl+C is handled above; also allow plain 'c' as confirm while prompted
                 KeyCode::Char('c') | KeyCode::Char('C') => Some(Action::ConfirmQuit),

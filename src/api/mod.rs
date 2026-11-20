@@ -7,12 +7,11 @@ use crate::api::innertube::InnertubeClient;
 use crate::api::model::*;
 use crate::auth::AuthSession;
 use crate::paths::Paths;
+use anyhow::Result;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::warn;
-
 
 pub struct ApiService {
     client: InnertubeClient,
@@ -77,10 +76,14 @@ impl ApiService {
             if r.running {
                 return;
             }
-            let recent = r.last_ok.is_some_and(|t| t.elapsed() < Duration::from_secs(60));
+            let recent = r
+                .last_ok
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(60));
             if recent {
                 drop(r);
-                let _ = self.tx.send(AppEvent::AuthState(AuthStateEvent::SessionExpired(msg)));
+                let _ = self
+                    .tx
+                    .send(AppEvent::AuthState(AuthStateEvent::SessionExpired(msg)));
                 return;
             }
             r.running = true;
@@ -96,7 +99,9 @@ impl ApiService {
         match recovered {
             crate::auth::Recovery::Refreshed(session) => {
                 self.client.apply_session(&session);
-                let _ = self.tx.send(AppEvent::AuthState(AuthStateEvent::SignedIn(session)));
+                let _ = self
+                    .tx
+                    .send(AppEvent::AuthState(AuthStateEvent::SignedIn(session)));
             }
             crate::auth::Recovery::Transient(e) => {
                 warn!("session check failed, keeping saved session: {e}");
@@ -105,7 +110,9 @@ impl ApiService {
                 ));
             }
             crate::auth::Recovery::Rejected(_) => {
-                let _ = self.tx.send(AppEvent::AuthState(AuthStateEvent::SessionExpired(msg)));
+                let _ = self
+                    .tx
+                    .send(AppEvent::AuthState(AuthStateEvent::SessionExpired(msg)));
             }
         }
     }
@@ -191,7 +198,9 @@ impl ApiService {
                     let _ = self.tx.send(AppEvent::PlaylistLoaded(p));
                 }
                 Err(e) => {
-                    let _ = self.tx.send(AppEvent::Error(format!("Playlist failed: {e}")));
+                    let _ = self
+                        .tx
+                        .send(AppEvent::Error(format!("Playlist failed: {e}")));
                 }
             },
             Command::LoadLibraryPlaylists => match self.client.library_playlists().await {
@@ -261,7 +270,9 @@ impl ApiService {
                     let _ = self.tx.send(AppEvent::AddedToPlaylist);
                 }
                 Err(e) => {
-                    let _ = self.tx.send(AppEvent::Error(format!("Add to playlist: {e}")));
+                    let _ = self
+                        .tx
+                        .send(AppEvent::Error(format!("Add to playlist: {e}")));
                 }
             },
             Command::CreatePlaylist { title } => match self.client.create_playlist(&title).await {
@@ -269,27 +280,30 @@ impl ApiService {
                     let _ = self.tx.send(AppEvent::PlaylistCreated(p));
                 }
                 Err(e) => {
-                    let _ = self.tx.send(AppEvent::Error(format!("Create playlist: {e}")));
+                    let _ = self
+                        .tx
+                        .send(AppEvent::Error(format!("Create playlist: {e}")));
                 }
             },
             Command::LoadLyrics {
                 video_id,
-                browse_id,
+                browse_id: Some(bid),
                 track: _,
             } => {
-                if let Some(bid) = browse_id {
-                    if let Ok(Some(plain)) = self.client.lyrics(&bid).await {
-                        let _ = self.tx.send(AppEvent::LyricsLoaded {
-                            video_id,
-                            lyrics: Lyrics {
-                                synced: None,
-                                plain: Some(plain),
-                                source: "YouTube Music".into(),
-                            },
-                        });
-                    }
+                if let Ok(Some(plain)) = self.client.lyrics(&bid).await {
+                    let _ = self.tx.send(AppEvent::LyricsLoaded {
+                        video_id,
+                        lyrics: Lyrics {
+                            synced: None,
+                            plain: Some(plain),
+                            source: "YouTube Music".into(),
+                        },
+                    });
                 }
             }
+            Command::LoadLyrics {
+                browse_id: None, ..
+            } => {}
             Command::ValidateCookies { cookies, .. } => {
                 self.set_cookies(Some(cookies));
             }

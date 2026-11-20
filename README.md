@@ -6,13 +6,66 @@ Search, play, queue, library, radio, synced lyrics, album-art-driven accents, an
 
 ## Install
 
-### From source
+### Homebrew (macOS / Linux)
 
 ```bash
-cargo install --path .
+brew install everything-tui/tap/yt-tui
 ```
 
-Requires a recent Rust toolchain (`rustup`).
+Update later with `brew upgrade yt-tui`.
+
+### Installer scripts
+
+```bash
+# Linux / macOS
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/everything-tui/ytmusic-tui/releases/latest/download/yt-tui-installer.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/everything-tui/ytmusic-tui/releases/latest/download/yt-tui-installer.ps1 | iex"
+```
+
+The installers place the `yt-tui` binary on your `PATH` (under `CARGO_HOME` by default).
+
+### Prebuilt binaries
+
+Every [GitHub Release](https://github.com/everything-tui/ytmusic-tui/releases) has these archives. Each comes with a `.sha256` checksum:
+
+| Platform | Archive |
+|---|---|
+| macOS, Apple Silicon | `yt-tui-aarch64-apple-darwin.tar.xz` |
+| macOS, Intel | `yt-tui-x86_64-apple-darwin.tar.xz` |
+| Linux x86_64 (glibc) | `yt-tui-x86_64-unknown-linux-gnu.tar.xz` |
+| Linux arm64 (glibc) | `yt-tui-aarch64-unknown-linux-gnu.tar.xz` |
+| Windows x86_64 | `yt-tui-x86_64-pc-windows-msvc.zip` |
+| Windows ARM64 | `yt-tui-aarch64-pc-windows-msvc.zip` |
+
+On Linux the binaries need ALSA (`libasound2`) and D-Bus (`libdbus-1-3`) at runtime; both are present on nearly every desktop distribution.
+
+### Build from source
+
+You need the stable Rust toolchain from [rustup](https://rustup.rs). Then, from the repository root:
+
+```bash
+cargo install --path . --locked
+```
+
+That puts `yt-tui` in `~/.cargo/bin`. To get just the binary in `target/release/yt-tui` instead, run `cargo build --release`.
+
+Prerequisites for each platform:
+
+**macOS**: `xcode-select --install`
+
+**Linux (Debian / Ubuntu)**
+
+```bash
+sudo apt install build-essential pkg-config libasound2-dev libdbus-1-dev
+```
+
+On Fedora: `sudo dnf install gcc pkgconf-pkg-config alsa-lib-devel dbus-devel`. On Arch: `sudo pacman -S base-devel alsa-lib dbus`.
+
+**Windows**: install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload, then run `cargo build --release`.
 
 ### Dependencies
 
@@ -128,30 +181,11 @@ cargo run -- doctor
 
 Project layout follows the architecture in the implementation plan: Elm-style `App` + async services (API, player, art, lyrics, auth).
 
-## Distribution
+## Releasing
 
-Release binaries can be produced with [`cargo-dist`](https://opensource.axo.dev/cargo-dist/):
+The version lives in three places that must match: the top `## [X.Y.Z] - YYYY-MM-DD` entry in `CHANGELOG.md`, `version` in `Cargo.toml`, and `Cargo.lock`. Check with `scripts/version.sh check` (CI runs it on every PR).
 
-```bash
-cargo install cargo-dist
-dist init    # once
-dist build
-```
-
-A Homebrew tap formula can point at those release assets:
-
-```ruby
-# Formula/yt-tui.rb (sketch)
-class YtTui < Formula
-  desc "YouTube Music in the terminal"
-  homepage "https://github.com/francoisegner/yt-tui"
-  url "https://github.com/francoisegner/yt-tui/releases/download/v0.1.0/yt-tui-aarch64-apple-darwin.tar.gz"
-  sha256 "…"
-  def install
-    bin.install "yt-tui"
-  end
-end
-```
+To release, open a PR from `main` into `publish` and merge it. CI builds every platform with [cargo-dist](https://opensource.axo.dev/cargo-dist/), creates tag `vX.Y.Z` and the GitHub Release (notes come from `CHANGELOG.md`), and updates the Homebrew formula in `everything-tui/homebrew-tap`.
 
 ## Manual QA checklist
 

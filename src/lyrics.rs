@@ -74,11 +74,7 @@ async fn fetch_lrclib(track: &Track) -> Result<Lyrics> {
         .build()?;
 
     let artist = track.artist_names();
-    let album = track
-        .album
-        .as_ref()
-        .map(|a| a.name.as_str())
-        .unwrap_or("");
+    let album = track.album.as_ref().map(|a| a.name.as_str()).unwrap_or("");
     let duration = track.duration.map(|d| d.as_secs()).unwrap_or(0);
 
     let url = format!(
@@ -103,7 +99,13 @@ async fn search_lrclib(client: &reqwest::Client, track: &Track) -> Result<Lyrics
         urlencoding_encode(&track.title),
         urlencoding_encode(&track.artist_names())
     );
-    let items: Vec<LrclibSearchItem> = client.get(&url).send().await?.error_for_status()?.json().await?;
+    let items: Vec<LrclibSearchItem> = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
     let target = track.duration.map(|d| d.as_secs_f64()).unwrap_or(0.0);
     let best = items.into_iter().min_by(|a, b| {
         let da = (a.duration.unwrap_or(0.0) - target).abs();

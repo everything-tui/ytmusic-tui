@@ -41,10 +41,7 @@ pub fn doctor_report(paths: &Paths) -> String {
     }
 
     let cache = crate::player::download::cache_size_bytes(&paths.audio_cache_dir());
-    lines.push(format!(
-        "audio cache: {:.1} MB",
-        cache as f64 / 1_048_576.0
-    ));
+    lines.push(format!("audio cache: {:.1} MB", cache as f64 / 1_048_576.0));
 
     lines.join("\n")
 }

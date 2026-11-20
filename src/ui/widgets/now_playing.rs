@@ -62,7 +62,11 @@ impl<'a> NowPlayingBar<'a> {
             height: rows_h,
         };
         let w = content.width;
-        let right_w = if w >= 70 { (w * 28 / 100).clamp(20, 40) } else { 0 };
+        let right_w = if w >= 70 {
+            (w * 28 / 100).clamp(20, 40)
+        } else {
+            0
+        };
         let left_w = (w * 30 / 100).clamp(16, 48);
         let cols = Layout::horizontal([
             Constraint::Length(left_w),
@@ -88,8 +92,16 @@ impl<'a> NowPlayingBar<'a> {
         };
         // Buttons get every row except the progress row and one spacer row.
         let btn_h = center.height.saturating_sub(2).max(1);
-        hit.buttons
-            .extend(render_controls(buf, Rect { height: btn_h, ..center }, &c, theme, Some(&self.cover)));
+        hit.buttons.extend(render_controls(
+            buf,
+            Rect {
+                height: btn_h,
+                ..center
+            },
+            &c,
+            theme,
+            Some(&self.cover),
+        ));
         let prog_w = center.width.min(72);
         let prog_y = center.y + center.height - 1;
         if prog_y < center.y + center.height {
@@ -99,7 +111,14 @@ impl<'a> NowPlayingBar<'a> {
                 width: prog_w,
                 height: 1,
             };
-            hit.progress = Some(render_progress(buf, prog, self.position, dur, self.state, theme));
+            hit.progress = Some(render_progress(
+                buf,
+                prog,
+                self.position,
+                dur,
+                self.state,
+                theme,
+            ));
             hit.duration = dur;
         }
 
@@ -163,13 +182,26 @@ impl<'a> NowPlayingBar<'a> {
         let Some(track) = self.track else {
             buf.set_stringn(text_x, line_y(top), "Nothing playing", text_w, theme.dim());
             if area.height >= 2 {
-                buf.set_stringn(text_x, line_y(top + 1), "Press / to search", text_w, theme.muted());
+                buf.set_stringn(
+                    text_x,
+                    line_y(top + 1),
+                    "Press / to search",
+                    text_w,
+                    theme.muted(),
+                );
             }
             return;
         };
 
-        let loading = matches!(self.state, PlaybackState::Loading | PlaybackState::Buffering);
-        let lead = if loading { format!("{} ", spinner()) } else { String::new() };
+        let loading = matches!(
+            self.state,
+            PlaybackState::Loading | PlaybackState::Buffering
+        );
+        let lead = if loading {
+            format!("{} ", spinner())
+        } else {
+            String::new()
+        };
         let title_w = text_w.saturating_sub(lead.width());
         let title = self.marquee.render(title_w);
         let title = if title.is_empty() {
@@ -242,8 +274,14 @@ mod tests {
         let track = Track {
             video_id: "x".into(),
             title: "Blinding Lights".into(),
-            artists: vec![ArtistRef { id: None, name: "The Weeknd".into() }],
-            album: Some(AlbumRef { id: None, name: "After Hours".into() }),
+            artists: vec![ArtistRef {
+                id: None,
+                name: "The Weeknd".into(),
+            }],
+            album: Some(AlbumRef {
+                id: None,
+                name: "After Hours".into(),
+            }),
             duration: Some(Duration::from_secs(200)),
             thumbnails: vec![],
             explicit: false,
@@ -255,7 +293,9 @@ mod tests {
         let marquee = Marquee::new("Blinding Lights");
         let px = ArtPixels {
             size: ArtPixels::SIZE,
-            rgb: (0..ArtPixels::SIZE * ArtPixels::SIZE * 3).map(|i| (i % 251) as u8).collect(),
+            rgb: (0..ArtPixels::SIZE * ArtPixels::SIZE * 3)
+                .map(|i| (i % 251) as u8)
+                .collect(),
         };
         let cover_data = Cover {
             pixels: Some(Arc::new(px)),
@@ -304,7 +344,11 @@ mod tests {
                 state: PlaybackState::Playing,
                 position: Duration::from_secs(73),
                 duration: None,
-                stream: Some(&StreamInfo { codec: "AAC", sample_rate: 44100, bytes: Some(6_400_000) }),
+                stream: Some(&StreamInfo {
+                    codec: "AAC",
+                    sample_rate: 44100,
+                    bytes: Some(6_400_000),
+                }),
                 volume: 0.6,
                 muted: false,
                 shuffle: true,
@@ -321,7 +365,11 @@ mod tests {
             assert_eq!(hit.buttons.len(), 6, "controls missing at {w}x{h}");
             assert!(out.contains("Blinding"), "title missing at {w}x{h}");
             // The right column (and with it the badge) only exists from 70 columns.
-            assert_eq!(out.contains("256 kbps"), w >= 80, "quality badge at {w}x{h}");
+            assert_eq!(
+                out.contains("256 kbps"),
+                w >= 80,
+                "quality badge at {w}x{h}"
+            );
             assert_eq!(out.contains("PREMIUM"), w >= 80, "premium tag at {w}x{h}");
             for g in ['│', '╭', '╮', '╰', '╯'] {
                 assert!(!out.contains(g), "border glyph {g} at {w}x{h}");

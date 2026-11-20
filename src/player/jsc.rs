@@ -77,7 +77,8 @@ impl Jsc {
         let id = self.fetch_player_id().await?;
         let path = self.script_path(&id);
         if !path.exists() {
-            let url = format!("https://www.youtube.com/s/player/{id}/player_ias.vflset/en_US/base.js");
+            let url =
+                format!("https://www.youtube.com/s/player/{id}/player_ias.vflset/en_US/base.js");
             let body = self
                 .http
                 .get(&url)
@@ -94,13 +95,19 @@ impl Jsc {
             self.remove_other_versions(&id);
         }
         let source = std::fs::read_to_string(&path).context("read player script")?;
-        let sts = extract_sts(&source).with_context(|| format!("no signatureTimestamp in player {id}"))?;
+        let sts = extract_sts(&source)
+            .with_context(|| format!("no signatureTimestamp in player {id}"))?;
         let script = PlayerScript { id, sts };
         *current = Some((script.clone(), Instant::now()));
         Ok(script)
     }
 
-    pub async fn solve(&self, player: &PlayerScript, sig: Vec<String>, n: Vec<String>) -> Result<Solved> {
+    pub async fn solve(
+        &self,
+        player: &PlayerScript,
+        sig: Vec<String>,
+        n: Vec<String>,
+    ) -> Result<Solved> {
         let (reply, rx) = oneshot::channel();
         self.jobs
             .send(Job {
@@ -118,7 +125,9 @@ impl Jsc {
     /// Load the current player into the solver ahead of the first ciphered URL.
     pub async fn warm_up(&self) -> Result<()> {
         let player = self.player().await?;
-        self.solve(&player, Vec::new(), Vec::new()).await.map(|_| ())
+        self.solve(&player, Vec::new(), Vec::new())
+            .await
+            .map(|_| ())
     }
 
     /// Old player versions are ~7 MB each (script + preprocessed) and never reused.
@@ -169,7 +178,10 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
 fn extract_player_id(text: &str) -> Option<String> {
     let unescaped = text.replace("\\/", "/");
     let rest = &unescaped[unescaped.find("/s/player/")? + "/s/player/".len()..];
-    let id: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+    let id: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect();
     (id.len() >= 8 && rest[id.len()..].starts_with('/')).then_some(id)
 }
 
@@ -193,7 +205,11 @@ fn extract_sts(source: &str) -> Option<u64> {
 fn solver_thread(rx: mpsc::Receiver<Job>) {
     let mut engine: Option<Engine> = None;
     while let Ok(job) = rx.recv() {
-        if engine.as_ref().map(|e| e.player_id != job.player_id).unwrap_or(true) {
+        if engine
+            .as_ref()
+            .map(|e| e.player_id != job.player_id)
+            .unwrap_or(true)
+        {
             engine = match Engine::load(&job) {
                 Ok(e) => Some(e),
                 Err(e) => {
@@ -203,7 +219,10 @@ fn solver_thread(rx: mpsc::Receiver<Job>) {
                 }
             };
         }
-        let result = engine.as_ref().expect("engine loaded").solve(&job.sig, &job.n);
+        let result = engine
+            .as_ref()
+            .expect("engine loaded")
+            .solve(&job.sig, &job.n);
         let _ = job.reply.send(result);
     }
 }
@@ -226,11 +245,14 @@ impl Engine {
                 Some(p) => p,
                 None => {
                     let started = Instant::now();
-                    ctx.eval::<(), _>(SOLVER_LIB).map_err(|e| js_error(&ctx, e))?;
+                    ctx.eval::<(), _>(SOLVER_LIB)
+                        .map_err(|e| js_error(&ctx, e))?;
                     ctx.eval::<(), _>("var meriyah = lib.meriyah; var astring = lib.astring;")
                         .map_err(|e| js_error(&ctx, e))?;
-                    ctx.eval::<(), _>(SOLVER_CORE).map_err(|e| js_error(&ctx, e))?;
-                    let source = std::fs::read_to_string(&job.script).context("read player script")?;
+                    ctx.eval::<(), _>(SOLVER_CORE)
+                        .map_err(|e| js_error(&ctx, e))?;
+                    let source =
+                        std::fs::read_to_string(&job.script).context("read player script")?;
                     ctx.globals().set("__player", source)?;
                     let pre: String = ctx
                         .eval(
@@ -242,7 +264,11 @@ impl Engine {
                             })()"#,
                         )
                         .map_err(|e| js_error(&ctx, e))?;
-                    info!("preprocessed player {} in {:?}", job.player_id, started.elapsed());
+                    info!(
+                        "preprocessed player {} in {:?}",
+                        job.player_id,
+                        started.elapsed()
+                    );
                     if let Err(e) = write_atomic(&job.preprocessed, pre.as_bytes()) {
                         warn!("caching preprocessed player: {e}");
                     }
@@ -329,7 +355,10 @@ mod tests {
         let dir = std::env::temp_dir().join("yt-tui-jsc-test");
         let jsc = Jsc::new(reqwest::Client::new(), dir);
         let player = jsc.player().await.unwrap();
-        let solved = jsc.solve(&player, vec![], vec!["ZdZIqFPQK-Ty8wId".into()]).await.unwrap();
+        let solved = jsc
+            .solve(&player, vec![], vec!["ZdZIqFPQK-Ty8wId".into()])
+            .await
+            .unwrap();
         let answer = &solved.n["ZdZIqFPQK-Ty8wId"];
         assert!(!answer.is_empty() && answer != "ZdZIqFPQK-Ty8wId");
     }

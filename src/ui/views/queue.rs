@@ -32,7 +32,10 @@ pub fn render(
         section_header(buf, row(area, 0), "Now playing", "", theme);
         let line = Line::from(vec![
             Span::styled("▶  ", theme.playing()),
-            Span::styled(truncate(&cur.title, area.width as usize / 2), theme.playing()),
+            Span::styled(
+                truncate(&cur.title, area.width as usize / 2),
+                theme.playing(),
+            ),
             Span::styled(format!("  ·  {}", cur.artist_names()), theme.dim()),
         ]);
         buf.set_line(area.x, area.y + 2, &line, area.width);

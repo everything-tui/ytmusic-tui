@@ -6,7 +6,9 @@
 //! no Opus decoder, so this one is registered alongside the built-in codecs.
 
 use std::sync::OnceLock;
-use symphonia::core::audio::{AsAudioBufferRef, AudioBuffer, AudioBufferRef, Channels, Signal, SignalSpec};
+use symphonia::core::audio::{
+    AsAudioBufferRef, AudioBuffer, AudioBufferRef, Channels, Signal, SignalSpec,
+};
 use symphonia::core::codecs::{
     CodecDescriptor, CodecParameters, CodecRegistry, Decoder, DecoderOptions, FinalizeResult,
     CODEC_TYPE_OPUS,
@@ -157,9 +159,12 @@ mod tests {
         use symphonia::core::codecs::DecoderOptions;
         // One second of a 440 Hz stereo tone, encoded in 20 ms packets.
         const FRAME: usize = 960;
-        let mut enc = rusty_opus::OpusEncoder::new(RATE as i32, 2, rusty_opus::Application::Audio).unwrap();
+        let mut enc =
+            rusty_opus::OpusEncoder::new(RATE as i32, 2, rusty_opus::Application::Audio).unwrap();
         let mut params = CodecParameters::new();
-        params.for_codec(CODEC_TYPE_OPUS).with_extra_data(head(2, 312, 0).into_boxed_slice());
+        params
+            .for_codec(CODEC_TYPE_OPUS)
+            .with_extra_data(head(2, 312, 0).into_boxed_slice());
         let mut dec = codecs().make(&params, &DecoderOptions::default()).unwrap();
         assert_eq!(dec.codec_params().sample_rate, Some(RATE));
 
@@ -178,23 +183,34 @@ mod tests {
             let buf = dec.decode(&packet).unwrap();
             frames += buf.frames();
             if let AudioBufferRef::F32(b) = buf {
-                peak = b.chan(0).iter().chain(b.chan(1)).fold(peak, |m, s| m.max(s.abs()));
+                peak = b
+                    .chan(0)
+                    .iter()
+                    .chain(b.chan(1))
+                    .fold(peak, |m, s| m.max(s.abs()));
             }
         }
         assert_eq!(frames, 50 * FRAME - 312, "pre-skip dropped once");
-        assert!(peak > 0.3 && peak < 0.7, "tone survives the round trip: peak {peak}");
+        assert!(
+            peak > 0.3 && peak < 0.7,
+            "tone survives the round trip: peak {peak}"
+        );
 
         // After a seek the decoder restarts but never re-drops the pre-skip.
         dec.reset();
         let mut out = [0u8; 1500];
         let len = enc.encode(&vec![0.0; FRAME * 2], FRAME, &mut out).unwrap();
-        let buf = dec.decode(&Packet::new_from_slice(0, 0, FRAME as u64, &out[..len])).unwrap();
+        let buf = dec
+            .decode(&Packet::new_from_slice(0, 0, FRAME as u64, &out[..len]))
+            .unwrap();
         assert_eq!(buf.frames(), FRAME);
     }
 
     #[test]
     fn registry_knows_opus() {
         assert!(codecs().get_codec(CODEC_TYPE_OPUS).is_some());
-        assert!(codecs().get_codec(symphonia::core::codecs::CODEC_TYPE_AAC).is_some());
+        assert!(codecs()
+            .get_codec(symphonia::core::codecs::CODEC_TYPE_AAC)
+            .is_some());
     }
 }

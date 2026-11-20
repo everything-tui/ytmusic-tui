@@ -121,7 +121,9 @@ impl<'a> Widget for EqualizerOverlay<'a> {
                 bar_style,
             );
 
-            let label_y = slider_bottom.saturating_add(1).min(inner.y + inner.height - 1);
+            let label_y = slider_bottom
+                .saturating_add(1)
+                .min(inner.y + inner.height - 1);
             let label = BAND_LABELS[bi];
             let db = format!("{gain:+.0}");
             let style = if is_sel {
@@ -149,8 +151,7 @@ impl<'a> Widget for EqualizerOverlay<'a> {
         }
 
         let hint_y = inner.y + inner.height.saturating_sub(1);
-        let hints =
-            "←/→ band  ↑/↓ ±1dB  0 reset  r flat  a Adaptive  1–5 presets";
+        let hints = "←/→ band  ↑/↓ ±1dB  0 reset  r flat  a Adaptive  1–5 presets";
         buf.set_stringn(
             inner.x,
             hint_y,

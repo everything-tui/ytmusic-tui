@@ -323,8 +323,9 @@ impl Seek for GrowingFileReader {
             SeekFrom::End(p) => {
                 // Never invent an end offset from `expected` alone — Symphonia/MP4
                 // will try to read there and rodio panics on the resulting SeekError.
-                let guard =
-                    wait_state(&self.inner, &self.cancel, |g| g.complete || g.failed.is_some())?;
+                let guard = wait_state(&self.inner, &self.cancel, |g| {
+                    g.complete || g.failed.is_some()
+                })?;
                 if let Some(ref err) = guard.failed {
                     return Err(std::io::Error::other(err.clone()));
                 }
@@ -478,7 +479,9 @@ impl StreamControl {
     }
 
     fn set_position(&self, pos: Duration) {
-        self.0.position_ms.store(pos.as_millis() as u64, Ordering::Relaxed);
+        self.0
+            .position_ms
+            .store(pos.as_millis() as u64, Ordering::Relaxed);
     }
 
     fn take_seek(&self) -> Option<Duration> {
@@ -527,7 +530,11 @@ impl StreamInfo {
             return None;
         }
         let nominal = (self.codec == "AAC")
-            .then(|| NOMINAL_KBPS.into_iter().find(|&n| (kbps / n as f64 - 1.0).abs() <= 0.1))
+            .then(|| {
+                NOMINAL_KBPS
+                    .into_iter()
+                    .find(|&n| (kbps / n as f64 - 1.0).abs() <= 0.1)
+            })
             .flatten();
         Some(nominal.unwrap_or(kbps.round() as u32))
     }
@@ -551,8 +558,13 @@ impl StreamInfo {
 
     /// The Premium tier: AAC 256 kbps or Opus at a comparable rate.
     pub fn is_high(&self, duration: Option<Duration>) -> bool {
-        let min = if self.codec == "Opus" { PREMIUM_OPUS_KBPS } else { 256 };
-        self.kbps(duration.unwrap_or_default()).is_some_and(|k| k >= min)
+        let min = if self.codec == "Opus" {
+            PREMIUM_OPUS_KBPS
+        } else {
+            256
+        };
+        self.kbps(duration.unwrap_or_default())
+            .is_some_and(|k| k >= min)
     }
 }
 
@@ -648,13 +660,10 @@ impl SymphoniaSource {
         // Placeholder spec until the first packet is decoded.
         let spec = symphonia::core::audio::SignalSpec {
             rate: track.codec_params.sample_rate.unwrap_or(44100),
-            channels: track
-                .codec_params
-                .channels
-                .unwrap_or(
-                    symphonia::core::audio::Channels::FRONT_LEFT
-                        | symphonia::core::audio::Channels::FRONT_RIGHT,
-                ),
+            channels: track.codec_params.channels.unwrap_or(
+                symphonia::core::audio::Channels::FRONT_LEFT
+                    | symphonia::core::audio::Channels::FRONT_RIGHT,
+            ),
         };
 
         let mut source = Self {
@@ -881,7 +890,10 @@ pub fn open_decoder(gf: Arc<GrowingFile>, cancel: &CancelToken) -> Result<Sympho
 
 /// Like `open_decoder`, but if the first probe fails while more data is still arriving,
 /// wait for a larger buffer and try once more (avoids false "can't open" toasts).
-pub fn open_decoder_resilient(gf: Arc<GrowingFile>, cancel: &CancelToken) -> Result<SymphoniaSource> {
+pub fn open_decoder_resilient(
+    gf: Arc<GrowingFile>,
+    cancel: &CancelToken,
+) -> Result<SymphoniaSource> {
     match open_decoder(gf.clone(), cancel) {
         Ok(src) => Ok(src),
         Err(first) => {
@@ -905,7 +917,11 @@ mod decode_tests {
 
     #[test]
     fn stream_info_label() {
-        let info = |bytes| StreamInfo { codec: "AAC", sample_rate: 44100, bytes };
+        let info = |bytes| StreamInfo {
+            codec: "AAC",
+            sample_rate: 44100,
+            bytes,
+        };
         let d = Some(Duration::from_secs(211));
         // CT_J9G6LHfQ: itag 141 at 6,761,864 bytes over 3:31.
         let premium = info(Some(6_761_864));
@@ -923,7 +939,11 @@ mod decode_tests {
         assert_eq!(premium.label(None, 40), "AAC · 44.1 kHz");
 
         // Opus is VBR: shown as measured, never snapped; Premium from ~200 kbps.
-        let opus = |kbps: u64| StreamInfo { codec: "Opus", sample_rate: 48000, bytes: Some(211 * kbps * 1000 / 8) };
+        let opus = |kbps: u64| StreamInfo {
+            codec: "Opus",
+            sample_rate: 48000,
+            bytes: Some(211 * kbps * 1000 / 8),
+        };
         assert_eq!(opus(137).label(d, 40), "Opus 137 kbps · 48 kHz");
         assert!(!opus(150).is_high(d));
         assert!(opus(245).is_high(d));
@@ -941,8 +961,7 @@ mod decode_tests {
                 if p.extension().and_then(|x| x.to_str()) != Some("m4a") {
                     continue;
                 }
-                if p
-                    .file_name()
+                if p.file_name()
                     .and_then(|n| n.to_str())
                     .is_some_and(|n| n.ends_with(".part"))
                 {
@@ -954,7 +973,8 @@ mod decode_tests {
                 }
             }
         }
-        best.map(|(_, p)| p).unwrap_or_else(|| dir.join("3QY9AzTHoio.m4a"))
+        best.map(|(_, p)| p)
+            .unwrap_or_else(|| dir.join("3QY9AzTHoio.m4a"))
     }
 
     #[test]
@@ -1000,7 +1020,9 @@ mod decode_tests {
         });
         let res = rx.recv_timeout(std::time::Duration::from_secs(5));
         cancel.cancel();
-        let n = res.expect("open blocked waiting for the whole file").unwrap();
+        let n = res
+            .expect("open blocked waiting for the whole file")
+            .unwrap();
         assert!(n > 0);
     }
 
@@ -1084,6 +1106,9 @@ mod decode_tests {
         // Drain well past the initial buffer — this used to die with
         // "packet out-of-bounds for a non-seekable stream".
         let n = src.by_ref().take(480_000).count();
-        assert!(n > 200_000, "expected sustained progressive decode, got {n}");
+        assert!(
+            n > 200_000,
+            "expected sustained progressive decode, got {n}"
+        );
     }
 }
