@@ -1307,7 +1307,7 @@ fn dump_if_empty(name: &str, empty: bool, json: &Value) {
     if !empty {
         return;
     }
-    let dir = std::env::temp_dir().join("yt-tui-debug");
+    let dir = std::env::temp_dir().join("ytmusic-tui-debug");
     let path = dir.join(format!("{name}.json"));
     let saved = std::fs::create_dir_all(&dir)
         .and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(json).unwrap_or_default()));

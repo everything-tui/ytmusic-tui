@@ -305,7 +305,7 @@ fn draw_main(
 }
 
 fn draw_confirm_quit(area: Rect, buf: &mut Buffer, theme: &Theme) {
-    let inner = modal(buf, area, 44, 8, "Quit yt-tui?", "", theme);
+    let inner = modal(buf, area, 44, 8, "Quit ytmusic-tui?", "", theme);
     let bg = Style::default().bg(theme.bg_modal);
     buf.set_stringn(
         inner.x,
@@ -456,7 +456,7 @@ fn draw_manual_cookie(area: Rect, buf: &mut Buffer, theme: &Theme, input: &str) 
         "1. Open a PRIVATE window, go to music.youtube.com and sign in",
         "2. DevTools → Network → any request → Copy as cURL",
         "3. Paste here (Cmd+V), press Enter, then close the private window",
-        "yt-tui then keeps this session alive itself — you only do this once.",
+        "ytmusic-tui then keeps this session alive itself — you only do this once.",
     ];
     for (i, s) in steps.iter().enumerate() {
         let style = if i == 0 { theme.normal() } else { theme.dim() };
@@ -590,7 +590,7 @@ mod tests {
     }
 
     fn test_app() -> App {
-        let root = std::env::temp_dir().join(format!("yt-tui-ui-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ytmusic-tui-ui-test-{}", std::process::id()));
         let paths = Arc::new(crate::paths::Paths {
             config_dir: root.join("config"),
             data_dir: root.join("data"),
@@ -697,7 +697,7 @@ mod tests {
                     1
                 );
                 // Full sidebar (with labels) only from 80 columns.
-                assert_eq!(out.contains("yt-tui"), w >= 80, "{ctx}");
+                assert_eq!(out.contains("ytmusic-tui"), w >= 80, "{ctx}");
             }
         }
         // Narrower than the rail threshold hides the sidebar entirely.

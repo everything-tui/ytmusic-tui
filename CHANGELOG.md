@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0] - 2026-11-21
+
+### Modified
+
+- The app is now called **ytmusic-tui**: run `ytmusic-tui` instead of `yt-tui` (also `ytmusic-tui mcp`, `ytmusic-tui doctor`, and `brew install everything-tui/tap/ytmusic-tui`). Your settings and sign-in move over automatically the first time you start it
+
 ## [0.1.0] - 2026-11-20
 
 ### Added

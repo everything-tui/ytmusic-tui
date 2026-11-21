@@ -62,7 +62,7 @@ Diff: unlock fails when the server omits KDF memory parameters.
 ## [0.3.0] - 2026-12-10
 
 ### Added
-- `yt-tui mcp` lets Claude add songs to the queue
+- `ytmusic-tui mcp` lets Claude add songs to the queue
 
 ### Modified
 - Search now shows songs before albums and playlists

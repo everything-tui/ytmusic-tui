@@ -2,9 +2,9 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "cargo run yt-tui",
+      "label": "cargo run ytmusic-tui",
       "type": "shell",
-      "command": "cargo run --bin yt-tui",
+      "command": "cargo run --bin ytmusic-tui",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -21,9 +21,9 @@
       "problemMatcher": ["$rustc"]
     },
     {
-      "label": "cargo run yt-tui (release)",
+      "label": "cargo run ytmusic-tui (release)",
       "type": "shell",
-      "command": "cargo run --release --bin yt-tui",
+      "command": "cargo run --release --bin ytmusic-tui",
       "options": {
         "cwd": "${workspaceFolder}"
       },

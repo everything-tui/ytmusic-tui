@@ -138,7 +138,7 @@ async fn fetch_art_inner(
 
     if !path.exists() {
         let client = reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (compatible; yt-tui/0.1)")
+            .user_agent("Mozilla/5.0 (compatible; ytmusic-tui/0.1)")
             .build()?;
         let bytes = download_art_bytes(&client, &url).await?;
         std::fs::write(&path, &bytes).context("write art cache")?;
@@ -346,7 +346,7 @@ mod accent_tests {
     fn accent_of(name: &str, fill: impl Fn(u32, u32) -> [u8; 3]) -> (u8, u8, u8) {
         let img = image::RgbImage::from_fn(100, 100, |x, y| image::Rgb(fill(x, y)));
         let path =
-            std::env::temp_dir().join(format!("yt-tui-accent-{}-{name}.png", std::process::id()));
+            std::env::temp_dir().join(format!("ytmusic-tui-accent-{}-{name}.png", std::process::id()));
         img.save(&path).unwrap();
         let out = extract_accent(&path).unwrap();
         let _ = std::fs::remove_file(path);

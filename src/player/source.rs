@@ -953,7 +953,7 @@ mod decode_tests {
 
     fn sample_path() -> PathBuf {
         // Prefer a larger DASH m4a so progressive demux exercises the sidx path.
-        let dir = PathBuf::from("/Users/francoisegner/Library/Caches/com.yt-tui.yt-tui/audio");
+        let dir = PathBuf::from("/Users/francoisegner/Library/Caches/com.ytmusic-tui.ytmusic-tui/audio");
         let mut best: Option<(u64, PathBuf)> = None;
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for e in rd.flatten() {
@@ -979,7 +979,7 @@ mod decode_tests {
 
     #[test]
     fn cancel_unblocks_reader_on_stalled_download() {
-        let dir = std::env::temp_dir().join("yt-tui-cancel-read");
+        let dir = std::env::temp_dir().join("ytmusic-tui-cancel-read");
         let gf = GrowingFile::create(&dir.join("stalled.m4a")).unwrap();
         gf.append(&[0u8; 16]).unwrap();
         let cancel = CancelToken::default();
@@ -1004,7 +1004,7 @@ mod decode_tests {
             return;
         }
         let data = std::fs::read(&path).unwrap();
-        let dir = std::env::temp_dir().join("yt-tui-throttled-open");
+        let dir = std::env::temp_dir().join("ytmusic-tui-throttled-open");
         let gf = GrowingFile::create(&dir.join("throttled.m4a")).unwrap();
         // A download stuck after the first ~200 KB (throttled CDN).
         gf.append(&data[..data.len().min(200 * 1024)]).unwrap();
@@ -1033,7 +1033,7 @@ mod decode_tests {
             return;
         }
         let data = std::fs::read(&path).unwrap();
-        let dir = std::env::temp_dir().join("yt-tui-seek-ahead");
+        let dir = std::env::temp_dir().join("ytmusic-tui-seek-ahead");
         let gf = GrowingFile::create(&dir.join("seek.m4a")).unwrap();
         let head = data.len().min(200 * 1024);
         gf.append(&data[..head]).unwrap();
@@ -1082,7 +1082,7 @@ mod decode_tests {
             return;
         }
         let data = std::fs::read(&path).unwrap();
-        let dir = std::env::temp_dir().join("yt-tui-partial-decode");
+        let dir = std::env::temp_dir().join("ytmusic-tui-partial-decode");
         let _ = std::fs::create_dir_all(&dir);
         let part = dir.join("partial.m4a");
         let gf = GrowingFile::create(&part).unwrap();

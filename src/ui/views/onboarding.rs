@@ -14,7 +14,7 @@ pub fn render(area: Rect, buf: &mut Buffer, theme: &Theme, status: &str) {
     }
     let center = |text: &str| r.x + r.width.saturating_sub(text.width() as u16) / 2;
 
-    let brand = "▶  yt-tui";
+    let brand = "▶  ytmusic-tui";
     buf.set_string(center(brand), r.y, brand, theme.accent_bold());
     let pitch = "YouTube Music, right in your terminal";
     buf.set_string(center(pitch), r.y + 2, pitch, theme.dim());

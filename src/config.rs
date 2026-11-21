@@ -17,7 +17,7 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ControlConfig {
-    /// Listen on a private Unix socket so `yt-tui mcp` can drive playback. Off by default.
+    /// Listen on a private Unix socket so `ytmusic-tui mcp` can drive playback. Off by default.
     pub enabled: bool,
 }
 
@@ -173,8 +173,8 @@ impl Config {
     }
 
     pub fn save(&self, paths: &Paths) -> Result<()> {
-        let header = r#"# yt-tui configuration
-# Docs: https://github.com/francoisegner/yt-tui
+        let header = r#"# ytmusic-tui configuration
+# Docs: https://github.com/everything-tui/ytmusic-tui
 
 "#;
         let body = toml::to_string_pretty(self)?;

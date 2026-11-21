@@ -25,7 +25,7 @@ Run after production changes in the same task, or when invoked explicitly (`/syn
 - [ ] Create or update top CHANGELOG entry; set date to today
 - [ ] Every bullet passes references/writing-entries.md (plain language, user-visible)
 - [ ] Set Cargo.toml [package] version to the same X.Y.Z
-- [ ] `cargo update -p yt-tui` so Cargo.lock matches
+- [ ] `cargo update -p ytmusic-tui` so Cargo.lock matches
 - [ ] `scripts/version.sh check` passes
 ```
 
@@ -50,7 +50,7 @@ Run after production changes in the same task, or when invoked explicitly (`/syn
    - Matching entry → append bullets; **always** rewrite the header date to today (`YYYY-MM-DD`)
    - Never use an `## Unreleased` heading: CI rejects it
    - **Write for end users, not developers.** Follow [references/writing-entries.md](references/writing-entries.md): describe what a user notices, in plain language; keep keys, CLI commands and `config.toml` settings; drop endpoints, function names, crypto details and invisible refactors
-6. **Cargo.toml**: set `[package] version` to the same `X.Y.Z`, then run `cargo update -p yt-tui` (updates only the yt-tui entry in `Cargo.lock`).
+6. **Cargo.toml**: set `[package] version` to the same `X.Y.Z`, then run `cargo update -p ytmusic-tui` (updates only the ytmusic-tui entry in `Cargo.lock`).
 7. **Verify**: `scripts/version.sh check` passes; date is today; bullets cover the user-visible changes since HEAD; reread each bullet as a non-technical user and rewrite any that need code knowledge to understand.
 
 ## Releasing (for reference)

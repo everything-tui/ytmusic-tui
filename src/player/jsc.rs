@@ -55,7 +55,7 @@ impl Jsc {
     pub fn new(http: reqwest::Client, cache_dir: PathBuf) -> Self {
         let (jobs, rx) = mpsc::channel::<Job>();
         std::thread::Builder::new()
-            .name("yt-tui-jsc".into())
+            .name("ytmusic-tui-jsc".into())
             .spawn(move || solver_thread(rx))
             .expect("spawn jsc thread");
         Self {
@@ -352,7 +352,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn solves_live_player() {
-        let dir = std::env::temp_dir().join("yt-tui-jsc-test");
+        let dir = std::env::temp_dir().join("ytmusic-tui-jsc-test");
         let jsc = Jsc::new(reqwest::Client::new(), dir);
         let player = jsc.player().await.unwrap();
         let solved = jsc

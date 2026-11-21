@@ -201,7 +201,7 @@ fn map_search(key: KeyEvent) -> Option<Action> {
 }
 
 pub fn help_text() -> &'static str {
-    r#"yt-tui — keyboard reference
+    r#"ytmusic-tui — keyboard reference
 
 Playback
   space           Play / Pause

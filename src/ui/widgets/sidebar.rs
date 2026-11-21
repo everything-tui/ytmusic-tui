@@ -134,7 +134,7 @@ impl<'a> Sidebar<'a> {
             area.y + 1,
             &Line::from(vec![
                 Span::styled(" ▶ ", theme.on_accent()),
-                Span::styled(" yt-tui", theme.heading()),
+                Span::styled(" ytmusic-tui", theme.heading()),
                 Span::styled(" music", theme.muted()),
             ])
             .patch_style(bg),

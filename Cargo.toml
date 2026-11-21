@@ -1,6 +1,6 @@
 [package]
-name = "yt-tui"
-version = "0.1.0"
+name = "ytmusic-tui"
+version = "0.2.0"
 edition = "2021"
 description = "YouTube Music in the terminal — a polished media-player TUI"
 license = "MIT"
@@ -10,7 +10,7 @@ keywords = ["youtube", "music", "tui", "terminal", "player"]
 categories = ["command-line-utilities", "multimedia"]
 
 [[bin]]
-name = "yt-tui"
+name = "ytmusic-tui"
 path = "src/main.rs"
 
 [dependencies]

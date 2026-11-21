@@ -2642,7 +2642,7 @@ mod prewarm_tests {
     use crate::api::model::{ArtistRef, Shelf, ShelfItem};
 
     fn app(prewarm: bool) -> (App, mpsc::UnboundedReceiver<PlayerCommand>) {
-        let root = std::env::temp_dir().join(format!("yt-tui-prewarm-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("ytmusic-tui-prewarm-test-{}", std::process::id()));
         let paths = Arc::new(Paths {
             config_dir: root.join("config"),
             data_dir: root.join("data"),

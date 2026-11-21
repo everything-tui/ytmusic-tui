@@ -13,8 +13,11 @@ pub struct Paths {
 
 impl Paths {
     pub fn new() -> Result<Self> {
-        let dirs = ProjectDirs::from("com", "yt-tui", "yt-tui")
+        let dirs = ProjectDirs::from("com", "ytmusic-tui", "ytmusic-tui")
             .context("could not determine project directories")?;
+        if let Some(old) = ProjectDirs::from("com", "yt-tui", "yt-tui") {
+            migrate_from_old_name(&old, &dirs);
+        }
         let paths = Self {
             config_dir: dirs.config_dir().to_path_buf(),
             data_dir: dirs.data_dir().to_path_buf(),
@@ -85,6 +88,30 @@ impl Paths {
 
     fn legacy_cookies_file(&self) -> PathBuf {
         self.cache_dir.join("cookies.txt")
+    }
+}
+
+/// The app was called `yt-tui` up to 0.1.0. Move its config, session and cache
+/// folders to the new name once, so users stay signed in and keep their settings.
+/// Only moves a folder when the new one doesn't exist yet. Safe to call repeatedly.
+fn migrate_from_old_name(old: &ProjectDirs, new: &ProjectDirs) {
+    let pairs = [
+        (old.config_dir(), new.config_dir()),
+        (old.data_dir(), new.data_dir()),
+        (old.cache_dir(), new.cache_dir()),
+    ];
+    for (from, to) in pairs {
+        // macOS shares one folder for config and data: the second pair finds it moved already
+        if !from.exists() || to.exists() {
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        match fs::rename(from, to) {
+            Ok(()) => info!("moved {} to {}", from.display(), to.display()),
+            Err(e) => tracing::warn!("could not move {} to {}: {e}", from.display(), to.display()),
+        }
     }
 }
 
