@@ -129,13 +129,15 @@ pub struct ControlsState {
 }
 
 /// Flat controls, no backgrounds: `⇄ ⏮ ▶ ⏭ ↻ ♥`. Drawn as scalable images when the terminal
-/// supports graphics, as plain glyphs otherwise. Returns clickable rects.
+/// supports graphics, as plain glyphs otherwise. Image icons are at most `max_rows` tall.
+/// Returns clickable rects.
 pub fn render_controls(
     buf: &mut Buffer,
     area: Rect,
     c: &ControlsState,
     theme: &Theme,
     cover: Option<&CoverCtx>,
+    max_rows: u16,
 ) -> Vec<(Rect, Action)> {
     if area.width == 0 || area.height == 0 {
         return Vec::new();
@@ -211,7 +213,7 @@ pub fn render_controls(
         .map(|ctx| ctx.renderer)
         .filter(|_| area.height >= 2);
 
-    let rows = area.height.min(2);
+    let rows = area.height.min(max_rows.max(2));
     let icon_w = renderer.map(|r| r.width_for_rows(rows)).unwrap_or(0);
     let width_of = |glyph: &str| {
         if renderer.is_some() {

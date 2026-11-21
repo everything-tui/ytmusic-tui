@@ -40,13 +40,16 @@ impl<'a> FullscreenNowPlaying<'a> {
             return;
         }
 
-        let viz_h = if inner.height >= 30 { 5 } else { 3 };
+        let tall = inner.height >= 30;
+        let viz_h = if tall { 5 } else { 3 };
+        // Controls sit between the visualizer and the progress bar, big enough for image icons.
+        let ctrl_h = if tall { 3 } else { 2 };
         let rows = Layout::vertical([
             Constraint::Fill(1),
             Constraint::Length(1),
             Constraint::Length(viz_h),
             Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(ctrl_h),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
@@ -128,7 +131,7 @@ impl<'a> FullscreenNowPlaying<'a> {
             .unwrap_or_default();
         hit.progress = Some(render_progress(
             buf,
-            rows[4],
+            rows[6],
             self.position,
             dur,
             self.state,
@@ -136,20 +139,31 @@ impl<'a> FullscreenNowPlaying<'a> {
         ));
         hit.duration = dur;
 
-        let ctrl_row = rows[6];
+        let ctrl_row = rows[4];
         let c = ControlsState {
             state: self.state,
             shuffle: self.shuffle,
             repeat: self.repeat,
             liked: self.liked,
         };
-        hit.buttons
-            .extend(render_controls(buf, ctrl_row, &c, theme, Some(&self.cover)));
-        if ctrl_row.width >= 80 {
+        let buttons = render_controls(buf, ctrl_row, &c, theme, Some(&self.cover), ctrl_h);
+        let row_end = ctrl_row.x + ctrl_row.width;
+        let buttons_end = buttons
+            .iter()
+            .map(|(r, _)| r.x + r.width)
+            .max()
+            .unwrap_or(ctrl_row.x);
+        hit.buttons.extend(buttons);
+        // Volume lines up with the right end of the progress bar, centred on the controls,
+        // and takes about a third of the row without running into the buttons.
+        let free = row_end.saturating_sub(buttons_end + 4);
+        let vol_w = (ctrl_row.width / 3).clamp(24, 56).min(free);
+        if vol_w >= 16 {
             let vol = Rect {
-                x: ctrl_row.x + ctrl_row.width - 24,
-                width: 24,
-                ..ctrl_row
+                x: row_end - vol_w,
+                y: ctrl_row.y + ctrl_row.height / 2,
+                width: vol_w,
+                height: 1,
             };
             hit.volume = Some(render_volume(buf, vol, self.volume, self.muted, theme));
         }

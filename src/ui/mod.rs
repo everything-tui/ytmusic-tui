@@ -429,8 +429,8 @@ fn draw_manual_cookie(area: Rect, buf: &mut Buffer, theme: &Theme, input: &str) 
         buf,
         area,
         76.min(area.width.saturating_sub(2)),
-        17,
-        "Paste a cookie",
+        18,
+        "Sign in: paste cURL",
         "enter submit · esc cancel · ^U clear",
         theme,
     );
@@ -451,15 +451,23 @@ fn draw_manual_cookie(area: Rect, buf: &mut Buffer, theme: &Theme, input: &str) 
     };
 
     let steps = [
-        "Paste a Cookie header or \"Copy as cURL\" from DevTools.",
+        "Use a fresh PRIVATE / incognito window, not your normal YouTube tab.",
+        "Your normal tab keeps refreshing the cookies and breaks the copy.",
         "",
-        "1. Open a PRIVATE window, go to music.youtube.com and sign in",
-        "2. DevTools → Network → any request → Copy as cURL",
-        "3. Paste here (Cmd+V), press Enter, then close the private window",
-        "ytmusic-tui then keeps this session alive itself — you only do this once.",
+        "1. Open a private window: Cmd/Ctrl+Shift+N (Firefox: Cmd/Ctrl+Shift+P)",
+        "2. Go to music.youtube.com and sign in",
+        "3. DevTools (F12 or Cmd+Opt+I) → Network tab → reload the page",
+        "4. Filter \"browse\", right-click a request → Copy → Copy as cURL",
+        "5. Paste here (Cmd+V / Ctrl+Shift+V) and press Enter",
+        "6. Close the private window. Do NOT sign out there.",
+        "ytmusic-tui keeps this session alive itself — you only do this once.",
     ];
     for (i, s) in steps.iter().enumerate() {
-        let style = if i == 0 { theme.normal() } else { theme.dim() };
+        let style = match i {
+            0 => theme.accent_bold(),
+            1 => theme.normal(),
+            _ => theme.dim(),
+        };
         buf.set_stringn(
             inner.x,
             inner.y + i as u16,
