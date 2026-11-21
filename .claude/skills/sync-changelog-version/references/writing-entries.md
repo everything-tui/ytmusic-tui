@@ -1,6 +1,6 @@
 # Writing Changelog Entries
 
-The CHANGELOG is copied verbatim onto the GitHub Release page. Its readers are **people who use yt-tui**, not people who read its code. Write every bullet so a regular music listener understands it without knowing Rust, YouTube's internal APIs or audio codecs.
+The CHANGELOG is copied verbatim onto the GitHub Release page. Its readers are **people who use ytmusic-tui**, not people who read its code. Write every bullet so a regular music listener understands it without knowing Rust, YouTube's internal APIs or audio codecs.
 
 **Goal:** a user skims the release notes and can tell in seconds whether the update affects how they use the app: a shortcut moved, a bug they hit is fixed, a feature they wanted exists now. Changed or removed shortcuts, commands and settings matter most: always say what the old behavior was and what to do now.
 
@@ -18,7 +18,7 @@ Before writing a bullet, ask: **"Would a user notice this while using the app?"*
 ## How to write a bullet
 
 1. **Describe what the user experiences, not what the code does.** "Search results now appear as you type" not "Debounced search query evaluation".
-2. **Start with the thing they touch**: a screen, a key, a command, a setting. "The queue…", "Pressing `e`…", "`yt-tui doctor`…".
+2. **Start with the thing they touch**: a screen, a key, a command, a setting. "The queue…", "Pressing `e`…", "`ytmusic-tui doctor`…".
 3. **Fixed bullets describe the old problem from the user's side.** "Unlocking no longer fails on some self-hosted servers" not "Handle missing `kdfMemory` in prelogin response".
 4. **One change per bullet, about 25 words max.** Split long bullets. Group 4+ related bullets under a short bold lead bullet with sub-bullets (as with a redesign).
 5. **Present tense, plain verbs**: "now shows", "opens", "no longer crashes", "you can now…".
@@ -29,7 +29,7 @@ Before writing a bullet, ask: **"Would a user notice this while using the app?"*
 **Keep** these. Users type or see them:
 
 - Keys: `Ctrl+t`, `g g`, `Enter`, `Esc` (always in backticks)
-- CLI commands and flags: `yt-tui mcp`, `--debug`
+- CLI commands and flags: `ytmusic-tui mcp`, `--debug`
 - Settings in `config.toml`: `theme = "nord"`, `[sync] background_interval_minutes`
 - Environment variables a user sets: `BW_TUI_HIBP_API_KEY`
 - Product terms users already know: song, album, artist, playlist, queue, radio, library, liked songs, lyrics, Music Premium, guest mode

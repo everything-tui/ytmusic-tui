@@ -70,7 +70,7 @@ pub async fn fetch_lyrics(
 
 async fn fetch_lrclib(track: &Track) -> Result<Lyrics> {
     let client = reqwest::Client::builder()
-        .user_agent("yt-tui/0.1 (https://github.com/francoisegner/yt-tui)")
+        .user_agent("ytmusic-tui/0.1 (https://github.com/everything-tui/ytmusic-tui)")
         .build()?;
 
     let artist = track.artist_names();

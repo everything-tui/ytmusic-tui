@@ -4,11 +4,11 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "yt-tui",
+      "name": "ytmusic-tui",
       "cargo": {
-        "args": ["build", "--bin=yt-tui"],
+        "args": ["build", "--bin=ytmusic-tui"],
         "filter": {
-          "name": "yt-tui",
+          "name": "ytmusic-tui",
           "kind": "bin"
         }
       },
@@ -22,11 +22,11 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "yt-tui (debug logging)",
+      "name": "ytmusic-tui (debug logging)",
       "cargo": {
-        "args": ["build", "--bin=yt-tui"],
+        "args": ["build", "--bin=ytmusic-tui"],
         "filter": {
-          "name": "yt-tui",
+          "name": "ytmusic-tui",
           "kind": "bin"
         }
       },
@@ -40,11 +40,11 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "yt-tui doctor",
+      "name": "ytmusic-tui doctor",
       "cargo": {
-        "args": ["build", "--bin=yt-tui"],
+        "args": ["build", "--bin=ytmusic-tui"],
         "filter": {
-          "name": "yt-tui",
+          "name": "ytmusic-tui",
           "kind": "bin"
         }
       },
@@ -55,11 +55,11 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "yt-tui (release)",
+      "name": "ytmusic-tui (release)",
       "cargo": {
-        "args": ["build", "--release", "--bin=yt-tui"],
+        "args": ["build", "--release", "--bin=ytmusic-tui"],
         "filter": {
-          "name": "yt-tui",
+          "name": "ytmusic-tui",
           "kind": "bin"
         }
       },

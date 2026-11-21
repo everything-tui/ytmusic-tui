@@ -1,6 +1,6 @@
 //! Minimal MCP (Model Context Protocol) stdio server.
 //!
-//! `yt-tui mcp` is spawned by an MCP client (Claude Code / Desktop). It translates
+//! `ytmusic-tui mcp` is spawned by an MCP client (Claude Code / Desktop). It translates
 //! `tools/call` into one request line on the running TUI's control socket.
 
 use crate::paths::Paths;
@@ -103,7 +103,7 @@ fn call_socket(paths: &Paths, request: &Value) -> Result<Value> {
 
     let unreachable = |why: String| {
         anyhow::anyhow!(
-            "cannot reach yt-tui ({why}). Start yt-tui and set `[control] enabled = true` in config.toml."
+            "cannot reach ytmusic-tui ({why}). Start ytmusic-tui and set `[control] enabled = true` in config.toml."
         )
     };
     let ep = super::Endpoint::load(paths).map_err(|e| unreachable(e.to_string()))?;
@@ -120,7 +120,7 @@ fn call_socket(paths: &Paths, request: &Value) -> Result<Value> {
     let mut reply = String::new();
     BufReader::new(&stream).read_line(&mut reply)?;
     if reply.is_empty() {
-        anyhow::bail!("yt-tui rejected or closed the connection");
+        anyhow::bail!("ytmusic-tui rejected or closed the connection");
     }
     Ok(serde_json::from_str(&reply)?)
 }
@@ -175,7 +175,7 @@ fn handle_message(paths: &Paths, msg: &Value) -> Option<Value> {
                 .and_then(Value::as_str)
                 .unwrap_or(DEFAULT_PROTOCOL),
             "capabilities": { "tools": {} },
-            "serverInfo": { "name": "yt-tui", "version": env!("CARGO_PKG_VERSION") },
+            "serverInfo": { "name": "ytmusic-tui", "version": env!("CARGO_PKG_VERSION") },
         }),
         "ping" => json!({}),
         "tools/list" => json!({ "tools": tools() }),
@@ -221,7 +221,7 @@ mod tests {
     use super::*;
 
     fn paths() -> Paths {
-        let d = std::env::temp_dir().join("yt-tui-mcp-test");
+        let d = std::env::temp_dir().join("ytmusic-tui-mcp-test");
         Paths {
             config_dir: d.clone(),
             data_dir: d.clone(),

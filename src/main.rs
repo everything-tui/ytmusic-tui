@@ -34,7 +34,7 @@ use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(name = "yt-tui", version, about = "YouTube Music in the terminal")]
+#[command(name = "ytmusic-tui", version, about = "YouTube Music in the terminal")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -54,7 +54,7 @@ enum Commands {
     Logout,
     /// Print environment diagnostics
     Doctor,
-    /// Run an MCP server on stdio that controls a running yt-tui (for Claude etc.)
+    /// Run an MCP server on stdio that controls a running ytmusic-tui (for Claude etc.)
     Mcp,
 }
 
@@ -95,7 +95,7 @@ fn main() -> Result<()> {
     let play = cli.play.clone();
 
     let handle = std::thread::Builder::new()
-        .name("yt-tui-app".into())
+        .name("ytmusic-tui-app".into())
         .spawn(move || {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -466,7 +466,7 @@ async fn async_main(paths: Arc<Paths>, _debug: bool, play: Option<String>) -> Re
 }
 
 fn setup_logging(paths: &Paths, debug: bool) -> Result<()> {
-    let file_appender = tracing_appender::rolling::daily(paths.logs_dir(), "yt-tui.log");
+    let file_appender = tracing_appender::rolling::daily(paths.logs_dir(), "ytmusic-tui.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
     // Leak guard so it lives for process lifetime
     std::mem::forget(_guard);

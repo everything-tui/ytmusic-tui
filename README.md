@@ -1,32 +1,32 @@
-# yt-tui
+# ytmusic-tui
 
 **YouTube Music in the terminal** — a polished media-player TUI written in Rust.
 
-Search, play, queue, library, radio, synced lyrics, album-art-driven accents, an FFT visualizer, and macOS Now Playing / media keys. Sign in once by pasting a cURL request; yt-tui then keeps the session alive on its own.
+Search, play, queue, library, radio, synced lyrics, album-art-driven accents, an FFT visualizer, and macOS Now Playing / media keys. Sign in once by pasting a cURL request; ytmusic-tui then keeps the session alive on its own.
 
 ## Install
 
 ### Homebrew (macOS / Linux)
 
 ```bash
-brew install everything-tui/tap/yt-tui
+brew install everything-tui/tap/ytmusic-tui
 ```
 
-Update later with `brew upgrade yt-tui`.
+Update later with `brew upgrade ytmusic-tui`.
 
 ### Installer scripts
 
 ```bash
 # Linux / macOS
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/everything-tui/ytmusic-tui/releases/latest/download/yt-tui-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/everything-tui/ytmusic-tui/releases/latest/download/ytmusic-tui-installer.sh | sh
 ```
 
 ```powershell
 # Windows (PowerShell)
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/everything-tui/ytmusic-tui/releases/latest/download/yt-tui-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/everything-tui/ytmusic-tui/releases/latest/download/ytmusic-tui-installer.ps1 | iex"
 ```
 
-The installers place the `yt-tui` binary on your `PATH` (under `CARGO_HOME` by default).
+The installers place the `ytmusic-tui` binary on your `PATH` (under `CARGO_HOME` by default).
 
 ### Prebuilt binaries
 
@@ -34,12 +34,12 @@ Every [GitHub Release](https://github.com/everything-tui/ytmusic-tui/releases) h
 
 | Platform | Archive |
 |---|---|
-| macOS, Apple Silicon | `yt-tui-aarch64-apple-darwin.tar.xz` |
-| macOS, Intel | `yt-tui-x86_64-apple-darwin.tar.xz` |
-| Linux x86_64 (glibc) | `yt-tui-x86_64-unknown-linux-gnu.tar.xz` |
-| Linux arm64 (glibc) | `yt-tui-aarch64-unknown-linux-gnu.tar.xz` |
-| Windows x86_64 | `yt-tui-x86_64-pc-windows-msvc.zip` |
-| Windows ARM64 | `yt-tui-aarch64-pc-windows-msvc.zip` |
+| macOS, Apple Silicon | `ytmusic-tui-aarch64-apple-darwin.tar.xz` |
+| macOS, Intel | `ytmusic-tui-x86_64-apple-darwin.tar.xz` |
+| Linux x86_64 (glibc) | `ytmusic-tui-x86_64-unknown-linux-gnu.tar.xz` |
+| Linux arm64 (glibc) | `ytmusic-tui-aarch64-unknown-linux-gnu.tar.xz` |
+| Windows x86_64 | `ytmusic-tui-x86_64-pc-windows-msvc.zip` |
+| Windows ARM64 | `ytmusic-tui-aarch64-pc-windows-msvc.zip` |
 
 On Linux the binaries need ALSA (`libasound2`) and D-Bus (`libdbus-1-3`) at runtime; both are present on nearly every desktop distribution.
 
@@ -51,7 +51,7 @@ You need the stable Rust toolchain from [rustup](https://rustup.rs). Then, from 
 cargo install --path . --locked
 ```
 
-That puts `yt-tui` in `~/.cargo/bin`. To get just the binary in `target/release/yt-tui` instead, run `cargo build --release`.
+That puts `ytmusic-tui` in `~/.cargo/bin`. To get just the binary in `target/release/ytmusic-tui` instead, run `cargo build --release`.
 
 Prerequisites for each platform:
 
@@ -78,7 +78,7 @@ No YouTube API key. No manual cookie copying in the happy path.
 ## Quick start
 
 ```bash
-yt-tui
+ytmusic-tui
 ```
 
 1. Press **Enter** to sign in (opens [music.youtube.com](https://music.youtube.com)), or **G** for guest mode.
@@ -88,10 +88,10 @@ yt-tui
 CLI helpers:
 
 ```bash
-yt-tui login     # prints sign-in instructions
-yt-tui logout
-yt-tui doctor    # print environment diagnostics
-yt-tui --debug   # verbose file logging
+ytmusic-tui login     # prints sign-in instructions
+ytmusic-tui logout
+ytmusic-tui doctor    # print environment diagnostics
+ytmusic-tui --debug   # verbose file logging
 ```
 
 ## Features
@@ -124,8 +124,8 @@ yt-tui --debug   # verbose file logging
 
 ## Sign-in details
 
-1. **Paste once** — open a *private* window, sign in at music.youtube.com, copy any request as cURL (DevTools → Network) and paste it in yt-tui (`L` or `P`). Then close the private window.
-2. yt-tui owns that session from then on: it rotates the short-lived cookies in the background the way a browser tab does, so you stay signed in. No browser access or Full Disk Access is needed.
+1. **Paste once** — open a *private* window, sign in at music.youtube.com, copy any request as cURL (DevTools → Network) and paste it in ytmusic-tui (`L` or `P`). Then close the private window.
+2. ytmusic-tui owns that session from then on: it rotates the short-lived cookies in the background the way a browser tab does, so you stay signed in. No browser access or Full Disk Access is needed.
 3. **Guest** — search and play without an account (no library / likes).
 
 The session is stored in a `0600` file (`auth.json`) under the app data directory. The OS keychain is not used, so there are no password prompts.
@@ -134,8 +134,8 @@ The session is stored in a `0600` file (`auth.json`) under the app data director
 
 Written on first run to the platform config dir, e.g.:
 
-- macOS: `~/Library/Preferences/com.yt-tui.yt-tui/config.toml`
-- Linux: `~/.config/yt-tui/config.toml`
+- macOS: `~/Library/Application Support/com.ytmusic-tui.ytmusic-tui/config.toml`
+- Linux: `~/.config/ytmusic-tui/config.toml`
 
 ```toml
 [ui]
@@ -163,7 +163,7 @@ eq_gains = [0.0, 0.0, 0.0, 0.0, 0.0]  # Bass … Treble, ±12 dB
 
 Press **`e`** for the equalizer (presets include Bass Boost). Switch themes live from the command palette (**`Ctrl+P`**, type "theme"); the choice is saved to the config.
 
-Logs: `…/Caches/…/logs/yt-tui.log` (never written to the terminal).
+Logs: `…/Caches/…/logs/ytmusic-tui.log` (never written to the terminal).
 
 ## Terminal tips
 
@@ -199,7 +199,7 @@ To release, open a PR from `main` into `publish` and merge it. CI builds every p
 - [ ] Visualizer responds while playing
 - [ ] Media keys / Now Playing on macOS
 - [ ] Resize down to 80×24; Kitty / iTerm / Terminal.app
-- [ ] `yt-tui doctor` prints sensible diagnostics
+- [ ] `ytmusic-tui doctor` prints sensible diagnostics
 
 ## Disclaimer
 
@@ -211,21 +211,21 @@ MIT
 
 ## Control from Claude (MCP)
 
-yt-tui can be driven by an MCP client such as Claude Code. It is off by default.
+ytmusic-tui can be driven by an MCP client such as Claude Code. It is off by default.
 
 1. Enable it in `config.toml`:
    ```toml
    [control]
    enabled = true
    ```
-2. Start yt-tui as usual, then register the bridge:
+2. Start ytmusic-tui as usual, then register the bridge:
    ```sh
-   claude mcp add yt-tui -- yt-tui mcp
+   claude mcp add ytmusic-tui -- ytmusic-tui mcp
    ```
 
 The TUI listens on `127.0.0.1` (random port) on Linux, macOS and Windows. The port and a
 random per-launch token are written to `control.json` in the data directory (readable only
 by you on Unix); clients must present the token, so other local processes can't drive
-playback. On Windows use `yt-tui.exe mcp`.
+playback. On Windows use `ytmusic-tui.exe mcp`.
 Tools cover playback, volume, shuffle/repeat, search and queue management. Account
 cookies and sign-in are never exposed, and searches run as a guest.

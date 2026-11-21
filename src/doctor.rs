@@ -1,10 +1,10 @@
 use crate::paths::Paths;
 use std::sync::Arc;
 
-/// Environment diagnostics for `yt-tui doctor`.
+/// Environment diagnostics for `ytmusic-tui doctor`.
 pub fn doctor_report(paths: &Paths) -> String {
     let mut lines = Vec::new();
-    lines.push("yt-tui doctor".into());
+    lines.push("ytmusic-tui doctor".into());
     lines.push(format!("config: {}", paths.config_dir.display()));
     lines.push(format!("data:   {}", paths.data_dir.display()));
     lines.push(format!("cache:  {}", paths.cache_dir.display()));

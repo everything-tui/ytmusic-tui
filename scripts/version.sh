@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Version + release helper. The single source of truth for the release version
 # is the top `## [X.Y.Z] - YYYY-MM-DD` heading in CHANGELOG.md; it must equal
-# `[package] version` in Cargo.toml and the yt-tui entry in Cargo.lock.
+# `[package] version` in Cargo.toml and the ytmusic-tui entry in Cargo.lock.
 #
 # Usage:
 #   scripts/version.sh version              print the Cargo.toml version
@@ -21,8 +21,8 @@ ROOT="$(git rev-parse --show-toplevel)"
 CHANGELOG="$ROOT/CHANGELOG.md"
 CARGO_TOML="$ROOT/Cargo.toml"
 CARGO_LOCK="$ROOT/Cargo.lock"
-PACKAGE="yt-tui"
-BREW_FORMULA="everything-tui/tap/yt-tui"
+PACKAGE="ytmusic-tui"
+BREW_FORMULA="everything-tui/tap/ytmusic-tui"
 
 die() { echo "❌ $*" >&2; [ -n "${GITHUB_ACTIONS:-}" ] && echo "::error::$*"; exit 1; }
 ok() { echo "✅ $*" >&2; }

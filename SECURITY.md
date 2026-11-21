@@ -2,7 +2,7 @@
 
 ## Threat model
 
-`yt-tui` is a local terminal client for YouTube Music.
+`ytmusic-tui` is a local terminal client for YouTube Music.
 
 **In scope**
 

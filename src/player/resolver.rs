@@ -1235,7 +1235,7 @@ mod tests {
         );
     }
 
-    /// Network + a real Premium session: `YT_TUI_AUTH_JSON=<auth.json> cargo test live_ -- --ignored`.
+    /// Network + a real Premium session: `YTMUSIC_TUI_AUTH_JSON=<auth.json> cargo test live_ -- --ignored`.
     /// Signed out, a normal track (3QY9AzTHoio) takes the plain path. Signed in, it and
     /// Premium-only (QpXD1Hfvy28), age-gated (4avspFPZOWs) and Music-only (CT_J9G6LHfQ)
     /// tracks resolve via WEB_REMIX at 256 kbps; a plain upload (jNQXAC9IVRw) isn't on
@@ -1244,13 +1244,13 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn live_signed_in_restricted_tracks() {
-        let Ok(path) = std::env::var("YT_TUI_AUTH_JSON") else {
+        let Ok(path) = std::env::var("YTMUSIC_TUI_AUTH_JSON") else {
             return;
         };
         let auth: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let cookies = auth["cookies"].as_str().unwrap().to_string();
-        let resolver = Resolver::new(std::env::temp_dir().join("yt-tui-jsc-test"));
+        let resolver = Resolver::new(std::env::temp_dir().join("ytmusic-tui-jsc-test"));
 
         // Signed out first: restrictions apply with a clear reason.
         let stream = resolver.resolve("3QY9AzTHoio").await.unwrap();
@@ -1300,7 +1300,8 @@ mod tests {
             let best = resolver.best_stream(ugc).await.unwrap().expect("stream");
             assert_eq!(best.quality(), Some(("Opus", 150)), "{ugc}");
         }
-        let dir = std::env::temp_dir().join(format!("yt-tui-live-upgrade-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("ytmusic-tui-live-upgrade-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dl = crate::player::download::Downloader::new(dir.clone(), 100);
         std::fs::write(dl.cached_path("3QY9AzTHoio"), b"128 kbps stand-in").unwrap();

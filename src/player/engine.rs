@@ -98,7 +98,7 @@ impl EngineHandle {
         let position_thread = position.clone();
 
         std::thread::Builder::new()
-            .name("yt-tui-audio".into())
+            .name("ytmusic-tui-audio".into())
             .spawn(move || {
                 if let Err(e) =
                     run_engine(cmd_rx, event_tx, samples_thread, eq_thread, position_thread)
@@ -379,7 +379,7 @@ mod viz_feed_tests {
     #[test]
     fn direct_tap_feeds_visualizer() {
         let path = PathBuf::from(
-            "/Users/francoisegner/Library/Caches/com.yt-tui.yt-tui/audio/3QY9AzTHoio.m4a",
+            "/Users/francoisegner/Library/Caches/com.ytmusic-tui.ytmusic-tui/audio/3QY9AzTHoio.m4a",
         );
         if !path.exists() {
             return;

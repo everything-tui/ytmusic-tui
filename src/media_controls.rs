@@ -76,8 +76,8 @@ impl MediaControlsBridge {
 
 fn init_controls(pending: Arc<Mutex<Vec<Action>>>) -> Result<MediaControls, souvlaki::Error> {
     let config = PlatformConfig {
-        dbus_name: "yt_tui",
-        display_name: "yt-tui",
+        dbus_name: "ytmusic_tui",
+        display_name: "ytmusic-tui",
         hwnd: None,
     };
     let mut controls = MediaControls::new(config)?;
