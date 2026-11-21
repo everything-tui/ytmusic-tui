@@ -953,7 +953,8 @@ mod decode_tests {
 
     fn sample_path() -> PathBuf {
         // Prefer a larger DASH m4a so progressive demux exercises the sidx path.
-        let dir = PathBuf::from("/Users/francoisegner/Library/Caches/com.ytmusic-tui.ytmusic-tui/audio");
+        let dir =
+            PathBuf::from("/Users/francoisegner/Library/Caches/com.ytmusic-tui.ytmusic-tui/audio");
         let mut best: Option<(u64, PathBuf)> = None;
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for e in rd.flatten() {

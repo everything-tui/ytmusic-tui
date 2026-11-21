@@ -1300,7 +1300,8 @@ mod tests {
             let best = resolver.best_stream(ugc).await.unwrap().expect("stream");
             assert_eq!(best.quality(), Some(("Opus", 150)), "{ugc}");
         }
-        let dir = std::env::temp_dir().join(format!("ytmusic-tui-live-upgrade-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("ytmusic-tui-live-upgrade-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dl = crate::player::download::Downloader::new(dir.clone(), 100);
         std::fs::write(dl.cached_path("3QY9AzTHoio"), b"128 kbps stand-in").unwrap();

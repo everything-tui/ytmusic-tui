@@ -911,7 +911,8 @@ mod tests {
     }
 
     fn downloader(name: &str) -> Downloader {
-        let dir = std::env::temp_dir().join(format!("ytmusic-tui-dl-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("ytmusic-tui-dl-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         Downloader::new(dir, 100)

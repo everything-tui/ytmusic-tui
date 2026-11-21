@@ -431,7 +431,10 @@ pub fn start(
         // A live instance accepts connections; a leftover file from a crash does not.
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, old.port));
         if TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok() {
-            return Err(anyhow!("another ytmusic-tui already owns {}", file.display()));
+            return Err(anyhow!(
+                "another ytmusic-tui already owns {}",
+                file.display()
+            ));
         }
     }
     let _ = std::fs::remove_file(&file);
