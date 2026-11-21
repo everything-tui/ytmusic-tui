@@ -117,8 +117,9 @@ fn main() -> Result<()> {
 
 async fn cli_login(_paths: Arc<Paths>) -> Result<()> {
     anyhow::bail!(
-        "Sign in from inside the app: press L (or P), then paste a cURL request or cookie header \
-         copied from music.youtube.com."
+        "Sign in from inside the app: press L (or P), then paste a cURL request copied from \
+         music.youtube.com in a fresh private / incognito window (not your normal tab, which keeps \
+         refreshing the cookies). The dialog shows each step."
     )
 }
 

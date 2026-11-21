@@ -1949,7 +1949,7 @@ impl App {
                 self.push_toast(Toast::error("Session expired — press L to sign in again"));
                 self.onboarding_status = format!(
                     "{msg}\n\n  Your username was cached, but YouTube is treating this session as signed out.\n  \
-                     Press L (or P) to paste a fresh cURL / cookie."
+                     Press L (or P) and paste a fresh cURL copied from a NEW private / incognito window."
                 );
                 self.overlay = Overlay::Onboarding;
             }

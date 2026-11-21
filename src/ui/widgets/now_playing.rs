@@ -101,6 +101,7 @@ impl<'a> NowPlayingBar<'a> {
             &c,
             theme,
             Some(&self.cover),
+            2,
         ));
         let prog_w = center.width.min(72);
         let prog_y = center.y + center.height - 1;

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0] - 2026-11-21
+
+### Modified
+
+- The sign-in window (`L` or `P`) now walks you through every step of copying your sign-in from the browser, and warns you to use a fresh private / incognito window. Copying it from your normal YouTube Music tab stops working soon after, because that tab keeps refreshing the sign-in
+- When you get signed out, the app now tells you to sign in again from a new private window
+
+### Fixed
+
+- In the full-screen player with lyrics, the play, skip, shuffle, repeat and like buttons are now bigger and sit above the progress bar, with a longer volume bar next to them, instead of being squeezed into a tiny row at the very bottom
+
 ## [0.2.0] - 2026-11-21
 
 ### Modified
