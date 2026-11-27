@@ -26,7 +26,7 @@ unicode-width = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1.2"
 rodio = { version = "0.20", default-features = false, features = ["symphonia-aac", "symphonia-isomp4"] }
 symphonia = { version = "0.5", features = ["aac", "isomp4", "mkv", "mp3"] }
 # Pure-Rust Opus, bit-exact with libopus: YouTube's WebM audio, no C toolchain needed.
