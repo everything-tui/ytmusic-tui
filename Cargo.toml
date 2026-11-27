@@ -52,7 +52,7 @@ lru = "0.12"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 bytes = "1"
 url = "2"
-base64 = "0.22"
+base64 = "0.23"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 tempfile = "3"
